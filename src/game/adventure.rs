@@ -24,6 +24,9 @@ pub struct PartyMember {
     pub xp_earned: u32,
     pub defending: bool,
     pub downed: bool,
+    /// Consumables carried into the adventure. Slots become None when used.
+    #[serde(default)]
+    pub consumables: Vec<Option<ItemId>>,
 }
 
 impl PartyMember {
@@ -40,7 +43,13 @@ impl PartyMember {
             xp_earned: 0,
             defending: false,
             downed: false,
+            consumables: adv.consumables.clone(),
         }
+    }
+
+    /// Check if this party member has any usable consumables.
+    pub fn has_consumables(&self) -> bool {
+        self.consumables.iter().any(|s| s.is_some())
     }
 }
 

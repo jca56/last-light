@@ -32,6 +32,7 @@ pub enum ItemCategory {
     Weapon,
     Armor,
     Accessory,
+    Consumable,
     Reagent,
     Special,
 }
@@ -56,10 +57,24 @@ pub struct GearStats {
     pub intellect: i32,
 }
 
+/// Effect when a consumable is used during an adventure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ConsumableEffect {
+    /// Restore HP to the user.
+    Heal(i32),
+    /// Temporary STR boost for the rest of the encounter.
+    BoostStrength(i32),
+    /// Temporary DEX boost for the rest of the encounter.
+    BoostDexterity(i32),
+    /// Temporary INT boost for the rest of the encounter.
+    BoostIntellect(i32),
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ItemProperties {
     pub gear_stats: Option<GearStats>,
     pub food_servings: Option<u32>,
+    pub consumable_effect: Option<ConsumableEffect>,
 }
 
 // ── ItemDef ───────────────────────────────────────────────────────────────
@@ -452,5 +467,83 @@ fn register_items(reg: &mut ItemRegistry) {
         gold_value: 4,
         tags: vec!["drink".into(), "tier_1".into()],
         properties: ItemProperties::default(),
+    });
+
+    // ── Consumables ─────────────────────────────────────────────────────
+
+    reg.register(ItemDef {
+        id: "minor_healing_potion".into(),
+        name: "Minor Healing Potion".into(),
+        description: "A small vial of glowing red liquid. Mends cuts and soothes bruises.".into(),
+        category: ItemCategory::Consumable,
+        rarity: Rarity::Common,
+        stack_limit: 20,
+        gold_value: 10,
+        tags: vec!["consumable".into(), "healing".into(), "tier_1".into()],
+        properties: ItemProperties {
+            consumable_effect: Some(ConsumableEffect::Heal(8)),
+            ..ItemProperties::default()
+        },
+    });
+
+    reg.register(ItemDef {
+        id: "healing_potion".into(),
+        name: "Healing Potion".into(),
+        description: "A sturdy flask of crimson brew. Knits bone and closes wounds.".into(),
+        category: ItemCategory::Consumable,
+        rarity: Rarity::Uncommon,
+        stack_limit: 20,
+        gold_value: 25,
+        tags: vec!["consumable".into(), "healing".into(), "tier_2".into()],
+        properties: ItemProperties {
+            consumable_effect: Some(ConsumableEffect::Heal(20)),
+            ..ItemProperties::default()
+        },
+    });
+
+    reg.register(ItemDef {
+        id: "strength_tonic".into(),
+        name: "Strength Tonic".into(),
+        description: "A bitter draught that makes your arms feel like oak boughs.".into(),
+        category: ItemCategory::Consumable,
+        rarity: Rarity::Uncommon,
+        stack_limit: 10,
+        gold_value: 20,
+        tags: vec!["consumable".into(), "buff".into(), "tier_1".into()],
+        properties: ItemProperties {
+            consumable_effect: Some(ConsumableEffect::BoostStrength(3)),
+            ..ItemProperties::default()
+        },
+    });
+
+    reg.register(ItemDef {
+        id: "swiftfoot_elixir".into(),
+        name: "Swiftfoot Elixir".into(),
+        description: "Shimmers like quicksilver. The world slows around you after a sip.".into(),
+        category: ItemCategory::Consumable,
+        rarity: Rarity::Uncommon,
+        stack_limit: 10,
+        gold_value: 20,
+        tags: vec!["consumable".into(), "buff".into(), "tier_1".into()],
+        properties: ItemProperties {
+            consumable_effect: Some(ConsumableEffect::BoostDexterity(3)),
+            ..ItemProperties::default()
+        },
+    });
+
+    reg.register(ItemDef {
+        id: "magespark_draught".into(),
+        name: "Magespark Draught".into(),
+        description: "Tiny sparks dance across its surface. Sharpens the mind to a razor's edge."
+            .into(),
+        category: ItemCategory::Consumable,
+        rarity: Rarity::Uncommon,
+        stack_limit: 10,
+        gold_value: 20,
+        tags: vec!["consumable".into(), "buff".into(), "tier_1".into()],
+        properties: ItemProperties {
+            consumable_effect: Some(ConsumableEffect::BoostIntellect(3)),
+            ..ItemProperties::default()
+        },
     });
 }

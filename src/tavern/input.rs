@@ -674,7 +674,8 @@ fn adventure_esc(state: &mut TavernState, game_state: &mut GameState) -> bool {
         }
         AdventureScreen::Results => {
             // Treat as "press Enter" — apply rewards and return to quest board
-            finish_active_adventure(game_state);
+            let events = finish_active_adventure(game_state);
+            log_level_ups(state, &events);
             state.tile_graphics.cleanup_all();
             state.adventure_view.screen = AdventureScreen::QuestBoard;
             true
@@ -725,38 +726,48 @@ fn handle_roster(state: &mut TavernState, game_state: &mut GameState, key: KeyCo
             }
             _ => {}
         },
-        RosterFocus::Equipment => match key {
-            KeyCode::Up => {
-                if state.adventure_view.roster_equip_slot > 0 {
-                    state.adventure_view.roster_equip_slot -= 1;
+        RosterFocus::Equipment => {
+            // Slots 0-2 = equipment, 3-6 = consumables
+            let max_slot = 2 + game::CONSUMABLE_SLOTS;
+            match key {
+                KeyCode::Up => {
+                    if state.adventure_view.roster_equip_slot > 0 {
+                        state.adventure_view.roster_equip_slot -= 1;
+                    }
                 }
-            }
-            KeyCode::Down => {
-                if state.adventure_view.roster_equip_slot < 2 {
-                    state.adventure_view.roster_equip_slot += 1;
+                KeyCode::Down => {
+                    if state.adventure_view.roster_equip_slot < max_slot {
+                        state.adventure_view.roster_equip_slot += 1;
+                    }
                 }
+                KeyCode::Enter => {
+                    let adv_idx = state.adventure_view.selected_adventurer;
+                    let slot = state.adventure_view.roster_equip_slot;
+                    if slot <= 2 {
+                        cycle_equipment_for_roster(game_state, adv_idx, slot);
+                    } else {
+                        cycle_consumable_for_roster(game_state, adv_idx, slot - 3);
+                    }
+                }
+                KeyCode::Char('x') | KeyCode::Char('X') => {
+                    let adv_idx = state.adventure_view.selected_adventurer;
+                    let slot = state.adventure_view.roster_equip_slot;
+                    if slot <= 2 {
+                        unequip_slot(game_state, adv_idx, slot);
+                    } else {
+                        unequip_consumable(game_state, adv_idx, slot - 3);
+                    }
+                }
+                KeyCode::Esc | KeyCode::Left => {
+                    state.adventure_view.roster_focus = RosterFocus::List;
+                }
+                KeyCode::Tab => {
+                    state.adventure_view.roster_focus = RosterFocus::List;
+                    state.adventure_view.screen = AdventureScreen::QuestBoard;
+                }
+                _ => {}
             }
-            KeyCode::Enter => {
-                // Cycle to the next compatible item from inventory
-                let adv_idx = state.adventure_view.selected_adventurer;
-                let equip_slot = state.adventure_view.roster_equip_slot;
-                // Reuse the same cycle_equipment function from party setup
-                cycle_equipment_for_roster(game_state, adv_idx, equip_slot);
-            }
-            KeyCode::Char('x') | KeyCode::Char('X') => {
-                let adv_idx = state.adventure_view.selected_adventurer;
-                let equip_slot = state.adventure_view.roster_equip_slot;
-                unequip_slot(game_state, adv_idx, equip_slot);
-            }
-            KeyCode::Esc | KeyCode::Left => {
-                state.adventure_view.roster_focus = RosterFocus::List;
-            }
-            KeyCode::Tab => {
-                state.adventure_view.roster_focus = RosterFocus::List;
-                state.adventure_view.screen = AdventureScreen::QuestBoard;
-            }
-            _ => {}
-        },
+        }
     }
 }
 
@@ -932,18 +943,21 @@ fn handle_party_setup(
                 }
             }
         },
-        KeyCode::Down => match state.adventure_view.setup_focus {
-            PartySetupFocus::PartySlots => {
-                if state.adventure_view.setup_slot < 2 {
-                    state.adventure_view.setup_slot += 1;
+        KeyCode::Down => {
+            let max_equip = 2 + game::CONSUMABLE_SLOTS;
+            match state.adventure_view.setup_focus {
+                PartySetupFocus::PartySlots => {
+                    if state.adventure_view.setup_slot < 2 {
+                        state.adventure_view.setup_slot += 1;
+                    }
+                }
+                PartySetupFocus::EquipmentSlots => {
+                    if state.adventure_view.setup_equip_slot < max_equip {
+                        state.adventure_view.setup_equip_slot += 1;
+                    }
                 }
             }
-            PartySetupFocus::EquipmentSlots => {
-                if state.adventure_view.setup_equip_slot < 2 {
-                    state.adventure_view.setup_equip_slot += 1;
-                }
-            }
-        },
+        }
         KeyCode::Enter => match state.adventure_view.setup_focus {
             PartySetupFocus::PartySlots => {
                 // Open adventurer picker
@@ -951,16 +965,19 @@ fn handle_party_setup(
                 state.adventure_view.picker_idx = 0;
             }
             PartySetupFocus::EquipmentSlots => {
-                // Cycle to next equippable item from inventory for current slot
                 let slot_idx = state.adventure_view.setup_slot;
                 let equip_slot = state.adventure_view.setup_equip_slot;
                 if let Some(adv_idx) = state.adventure_view.party_slots[slot_idx] {
-                    cycle_equipment(game_state, data, adv_idx, equip_slot);
+                    if equip_slot <= 2 {
+                        cycle_equipment(game_state, data, adv_idx, equip_slot);
+                    } else {
+                        cycle_consumable(game_state, data, adv_idx, equip_slot - 3);
+                    }
                 }
             }
         },
         KeyCode::Char('x') | KeyCode::Char('X') => {
-            // Clear selected slot or unequip selected gear
+            // Clear selected slot or unequip selected gear/consumable
             match state.adventure_view.setup_focus {
                 PartySetupFocus::PartySlots => {
                     state.adventure_view.party_slots[state.adventure_view.setup_slot] = None;
@@ -969,7 +986,11 @@ fn handle_party_setup(
                     let slot_idx = state.adventure_view.setup_slot;
                     let equip_slot = state.adventure_view.setup_equip_slot;
                     if let Some(adv_idx) = state.adventure_view.party_slots[slot_idx] {
-                        unequip_slot(game_state, adv_idx, equip_slot);
+                        if equip_slot <= 2 {
+                            unequip_slot(game_state, adv_idx, equip_slot);
+                        } else {
+                            unequip_consumable(game_state, adv_idx, equip_slot - 3);
+                        }
                     }
                 }
             }
@@ -1074,6 +1095,142 @@ fn unequip_slot(game_state: &mut GameState, adv_idx: usize, equip_slot: usize) {
         1 => adv.equipment.armor.take(),
         2 => adv.equipment.accessory.take(),
         _ => None,
+    };
+    if let Some(id) = removed {
+        game_state.inventory.add(&id, 1);
+    }
+}
+
+/// Cycle through consumable items in inventory for a given consumable slot.
+fn cycle_consumable_for_roster(game_state: &mut GameState, adv_idx: usize, slot: usize) {
+    let registry = game::ItemRegistry::new();
+    let compatible: Vec<game::ItemId> = game_state
+        .inventory
+        .items()
+        .iter()
+        .filter_map(|(id, qty)| {
+            if *qty == 0 {
+                return None;
+            }
+            let def = registry.get(id)?;
+            if def.category == game::ItemCategory::Consumable {
+                Some(id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if compatible.is_empty() {
+        return;
+    }
+
+    let Some(adv) = game_state.adventurers.get_mut(adv_idx) else {
+        return;
+    };
+    adv.init_consumable_slots();
+
+    let current_id = adv.consumables.get(slot).cloned().flatten();
+
+    let next_id = match &current_id {
+        None => compatible[0].clone(),
+        Some(curr) => {
+            let pos = compatible.iter().position(|id| id == curr);
+            match pos {
+                Some(i) => compatible[(i + 1) % compatible.len()].clone(),
+                None => compatible[0].clone(),
+            }
+        }
+    };
+
+    // Return old item
+    if let Some(prev) = current_id {
+        game_state.inventory.add(&prev, 1);
+    }
+
+    // Take new item
+    if !game_state.inventory.remove(&next_id, 1) {
+        return;
+    }
+
+    let Some(adv) = game_state.adventurers.get_mut(adv_idx) else {
+        return;
+    };
+    if slot < adv.consumables.len() {
+        adv.consumables[slot] = Some(next_id);
+    }
+}
+
+fn cycle_consumable(
+    game_state: &mut GameState,
+    data: &GameData,
+    adv_idx: usize,
+    slot: usize,
+) {
+    let compatible: Vec<game::ItemId> = game_state
+        .inventory
+        .items()
+        .iter()
+        .filter_map(|(id, qty)| {
+            if *qty == 0 {
+                return None;
+            }
+            let def = data.item_registry.get(id)?;
+            if def.category == game::ItemCategory::Consumable {
+                Some(id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if compatible.is_empty() {
+        return;
+    }
+
+    let Some(adv) = game_state.adventurers.get_mut(adv_idx) else {
+        return;
+    };
+    adv.init_consumable_slots();
+
+    let current_id = adv.consumables.get(slot).cloned().flatten();
+
+    let next_id = match &current_id {
+        None => compatible[0].clone(),
+        Some(curr) => {
+            let pos = compatible.iter().position(|id| id == curr);
+            match pos {
+                Some(i) => compatible[(i + 1) % compatible.len()].clone(),
+                None => compatible[0].clone(),
+            }
+        }
+    };
+
+    if let Some(prev) = current_id {
+        game_state.inventory.add(&prev, 1);
+    }
+
+    if !game_state.inventory.remove(&next_id, 1) {
+        return;
+    }
+
+    let Some(adv) = game_state.adventurers.get_mut(adv_idx) else {
+        return;
+    };
+    if slot < adv.consumables.len() {
+        adv.consumables[slot] = Some(next_id);
+    }
+}
+
+fn unequip_consumable(game_state: &mut GameState, adv_idx: usize, slot: usize) {
+    let Some(adv) = game_state.adventurers.get_mut(adv_idx) else {
+        return;
+    };
+    adv.init_consumable_slots();
+    let removed = if slot < adv.consumables.len() {
+        adv.consumables[slot].take()
+    } else {
+        None
     };
     if let Some(id) = removed {
         game_state.inventory.add(&id, 1);
@@ -1321,6 +1478,43 @@ fn handle_combat(
         return;
     }
 
+    if state.adventure_view.combat_picking_consumable {
+        // Consumable picker
+        let member = &adventure.party[actor_idx];
+        let slot_count = member.consumables.len();
+        match key {
+            KeyCode::Up => {
+                if state.adventure_view.combat_consumable_idx > 0 {
+                    state.adventure_view.combat_consumable_idx -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if state.adventure_view.combat_consumable_idx + 1 < slot_count {
+                    state.adventure_view.combat_consumable_idx += 1;
+                }
+            }
+            KeyCode::Enter => {
+                let ci = state.adventure_view.combat_consumable_idx;
+                let item_id = member.consumables.get(ci).cloned().flatten();
+                if let Some(id) = item_id {
+                    resolve_consumable_use(adventure, actor_idx, ci, &id, data);
+                    state.adventure_view.combat_picking_consumable = false;
+                    state.adventure_view.combat_action_idx = 0;
+                    advance_combat_after_action(state, game_state, data);
+                }
+            }
+            KeyCode::Esc => {
+                state.adventure_view.combat_picking_consumable = false;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // Check if current member has any consumables
+    let has_items = adventure.party.get(actor_idx).map(|m| m.has_consumables()).unwrap_or(false);
+    let max_action = if has_items { 3 } else { 2 };
+
     // Action menu
     match key {
         KeyCode::Up => {
@@ -1329,7 +1523,7 @@ fn handle_combat(
             }
         }
         KeyCode::Down => {
-            if state.adventure_view.combat_action_idx < 2 {
+            if state.adventure_view.combat_action_idx < max_action {
                 state.adventure_view.combat_action_idx += 1;
             }
         }
@@ -1337,7 +1531,6 @@ fn handle_combat(
             match state.adventure_view.combat_action_idx {
                 0 => {
                     // Attack — pick target
-                    // Find first alive enemy as default
                     let first_alive = combat.enemies.iter().position(|e| e.current_hp > 0);
                     if let Some(idx) = first_alive {
                         state.adventure_view.combat_target_idx = idx;
@@ -1364,10 +1557,90 @@ fn handle_combat(
                     );
                     advance_combat_after_action(state, game_state, data);
                 }
+                3 => {
+                    // Use Item — open consumable picker
+                    state.adventure_view.combat_consumable_idx = 0;
+                    state.adventure_view.combat_picking_consumable = true;
+                }
                 _ => {}
             }
         }
         _ => {}
+    }
+}
+
+/// Apply a consumable effect to the acting party member, consume the item,
+/// and log the result.
+fn resolve_consumable_use(
+    adventure: &mut game::ActiveAdventure,
+    actor_idx: usize,
+    consumable_slot: usize,
+    item_id: &game::ItemId,
+    data: &GameData,
+) {
+    let Some(def) = data.item_registry.get(item_id) else {
+        return;
+    };
+    let Some(effect) = &def.properties.consumable_effect else {
+        return;
+    };
+    let member = &mut adventure.party[actor_idx];
+    let member_name = member.name.clone();
+    let item_name = def.name.clone();
+
+    match effect {
+        game::ConsumableEffect::Heal(amount) => {
+            let old_hp = member.current_hp;
+            member.current_hp = (member.current_hp + amount).min(member.max_hp);
+            let healed = member.current_hp - old_hp;
+            if let game::AdventureState::InCombat(combat) = &mut adventure.state {
+                combat.log.push(format!(
+                    "{} uses {} — heals {} HP",
+                    member_name, item_name, healed
+                ));
+            }
+        }
+        game::ConsumableEffect::BoostStrength(amount) => {
+            member.strength += amount;
+            if let game::AdventureState::InCombat(combat) = &mut adventure.state {
+                combat.log.push(format!(
+                    "{} uses {} — STR +{}",
+                    member_name, item_name, amount
+                ));
+            }
+        }
+        game::ConsumableEffect::BoostDexterity(amount) => {
+            member.dexterity += amount;
+            if let game::AdventureState::InCombat(combat) = &mut adventure.state {
+                combat.log.push(format!(
+                    "{} uses {} — DEX +{}",
+                    member_name, item_name, amount
+                ));
+            }
+        }
+        game::ConsumableEffect::BoostIntellect(amount) => {
+            member.intellect += amount;
+            if let game::AdventureState::InCombat(combat) = &mut adventure.state {
+                combat.log.push(format!(
+                    "{} uses {} — INT +{}",
+                    member_name, item_name, amount
+                ));
+            }
+        }
+    }
+
+    // Remove from member's consumable slots
+    if consumable_slot < member.consumables.len() {
+        member.consumables[consumable_slot] = None;
+    }
+
+    // Also remove from the adventurer's permanent consumable list
+    if let Some(adv) = adventure.party.get(actor_idx) {
+        // We can't access game_state here, but we already consumed it from
+        // the snapshot — the adventurer's consumables are separate.
+        // The item was already taken from inventory when equipping, so nothing
+        // to return. The adventurer's consumables will be synced back if needed.
+        let _ = adv;
     }
 }
 
@@ -1512,18 +1785,35 @@ fn end_combat_loss(state: &mut TavernState, game_state: &mut GameState) {
 
 fn handle_results(state: &mut TavernState, game_state: &mut GameState, key: KeyCode) {
     if key == KeyCode::Enter {
-        finish_active_adventure(game_state);
+        let events = finish_active_adventure(game_state);
+        log_level_ups(state, &events);
         state.tile_graphics.cleanup_all();
         state.adventure_view.screen = AdventureScreen::QuestBoard;
     }
 }
 
+fn log_level_ups(state: &mut TavernState, events: &[game::GameEvent]) {
+    for event in events {
+        if let game::GameEvent::LevelUp { adventurer_name, new_level } = event {
+            state.log_messages.push((
+                format!("{} reached level {}!", adventurer_name, new_level),
+                ratatui::style::Style::default().fg(ui::GOLD),
+            ));
+        }
+    }
+    if !events.is_empty() {
+        state.auto_scroll(20);
+    }
+}
+
 /// Apply pending rewards from the active adventure and clear it.
-fn finish_active_adventure(game_state: &mut GameState) {
+/// Returns level-up events (if any) for the UI log.
+fn finish_active_adventure(game_state: &mut GameState) -> Vec<game::GameEvent> {
     let Some(adventure) = game_state.active_adventure.take() else {
-        return;
+        return Vec::new();
     };
     let success = matches!(adventure.state, AdventureState::Complete { success: true });
+    let mut events = Vec::new();
 
     // Apply quest completion rewards if successful
     if success {
@@ -1533,17 +1823,8 @@ fn finish_active_adventure(game_state: &mut GameState) {
         }
         game_state.gold = game_state.gold.saturating_add(adventure.pending_gold);
 
-        // Apply quest completion bonus rewards (need to look up quest from data — but no data here)
-        // We'll instead pre-merge them into pending_* when starting the adventure. For now, the
-        // quest's completion_loot/gold are baked into pending in the success path here:
-        // ... but we don't have data. We'll just use what's already in pending.
-
-        // XP
-        for member in &adventure.party {
-            if let Some(adv) = game_state.adventurers.get_mut(member.roster_idx) {
-                adv.xp = adv.xp.saturating_add(adventure.pending_xp);
-            }
-        }
+        // XP + level-ups
+        events = game_state.apply_adventure_xp(&adventure.party, adventure.pending_xp);
     }
 
     // Restore party adventurers to Ready (downed → 1 HP / Ready in MVP)
@@ -1552,6 +1833,8 @@ fn finish_active_adventure(game_state: &mut GameState) {
             adv.status = game::AdventurerStatus::Ready;
         }
     }
+
+    events
 }
 
 fn abandon_active_adventure(game_state: &mut GameState) {

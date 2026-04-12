@@ -24,6 +24,7 @@ fn main() -> io::Result<()> {
         // Load game definitions and saved state
         let data = game::GameData::new();
         let mut game_state = game::load_game().unwrap_or_else(game::GameState::new);
+        game_state.migrate_adventurers();
 
         // Run the tavern dashboard
         tavern::run(&mut terminal, &data, &mut game_state)?;

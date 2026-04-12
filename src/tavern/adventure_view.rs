@@ -187,34 +187,56 @@ fn draw_roster_detail(
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(""));
 
-    // Level and XP
+    // Level and XP bar
     lines.push(Line::from(vec![
         Span::styled("  Level ", Style::default().fg(ui::DIM)),
         Span::styled(
             format!("{}", adv.level),
             Style::default().fg(ui::WARM_WHITE).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("    XP ", Style::default().fg(ui::DIM)),
-        Span::styled(
-            format!("{}", adv.xp),
-            Style::default().fg(ui::WARM_WHITE),
-        ),
     ]));
+    // XP progress bar
+    if let Some((progress, needed)) = game::xp_progress(adv.xp, adv.level) {
+        let bar_width = 20usize;
+        let filled = if needed > 0 {
+            ((progress as f64 / needed as f64) * bar_width as f64) as usize
+        } else {
+            bar_width
+        };
+        let empty = bar_width - filled;
+        lines.push(Line::from(vec![
+            Span::styled("  XP ", Style::default().fg(ui::DIM)),
+            Span::styled("█".repeat(filled), Style::default().fg(ui::FLAME)),
+            Span::styled("░".repeat(empty), Style::default().fg(ui::BORDER)),
+            Span::styled(
+                format!("  {}/{}", progress, needed),
+                Style::default().fg(ui::DIM),
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("  XP ", Style::default().fg(ui::DIM)),
+            Span::styled("MAX", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
+        ]));
+    }
     lines.push(Line::from(""));
 
-    // Stats (base + effective)
+    // Stats: effective = base + level growth + gear
+    // Show effective total, with gear bonus in parentheses
+    let levels_gained = adv.level.saturating_sub(1) as i32;
+    let (hp_g, str_g, dex_g, int_g) = adv.class.growth();
     lines.push(Line::from(Span::styled(
         "  Stats",
         Style::default().fg(ui::DIM).add_modifier(Modifier::BOLD),
     )));
     let stat_rows = [
-        ("  HP ", stats.max_hp, adv.base_stats.max_hp),
-        ("  STR", stats.strength, adv.base_stats.strength),
-        ("  DEX", stats.dexterity, adv.base_stats.dexterity),
-        ("  INT", stats.intellect, adv.base_stats.intellect),
+        ("  HP ", stats.max_hp, adv.base_stats.max_hp + hp_g * levels_gained),
+        ("  STR", stats.strength, adv.base_stats.strength + str_g * levels_gained),
+        ("  DEX", stats.dexterity, adv.base_stats.dexterity + dex_g * levels_gained),
+        ("  INT", stats.intellect, adv.base_stats.intellect + int_g * levels_gained),
     ];
-    for (label, effective, base) in stat_rows {
-        let bonus = effective - base;
+    for (label, effective, base_plus_level) in stat_rows {
+        let gear_bonus = effective - base_plus_level;
         let mut spans = vec![
             Span::styled(format!("  {} ", label), Style::default().fg(ui::DIM)),
             Span::styled(
@@ -222,9 +244,9 @@ fn draw_roster_detail(
                 Style::default().fg(ui::WARM_WHITE).add_modifier(Modifier::BOLD),
             ),
         ];
-        if bonus != 0 {
+        if gear_bonus != 0 {
             spans.push(Span::styled(
-                format!("  ({} {:+})", base, bonus),
+                format!("  ({} {:+})", base_plus_level, gear_bonus),
                 Style::default().fg(ui::FOREST_GREEN),
             ));
         }
@@ -290,6 +312,47 @@ fn draw_roster_detail(
                     Span::styled(marker, Style::default().fg(ui::FLAME)),
                     Span::styled(label, label_style),
                     Span::styled("— empty —", Style::default().fg(ui::DIM)),
+                ]));
+            }
+        }
+    }
+    lines.push(Line::from(""));
+
+    // Consumables
+    lines.push(Line::from(Span::styled(
+        "  Consumables",
+        Style::default().fg(ui::DIM).add_modifier(Modifier::BOLD),
+    )));
+    for slot_i in 0..game::CONSUMABLE_SLOTS {
+        let combined_slot = 3 + slot_i; // 0-2 are equipment, 3+ are consumables
+        let is_selected = equip_focused && combined_slot == state.adventure_view.roster_equip_slot;
+        let marker = if is_selected { "▸ " } else { "  " };
+        let label_style = if is_selected {
+            Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ui::DIM)
+        };
+        let slot_label = format!("  {}. ", slot_i + 1);
+        let item = adv.consumables.get(slot_i).and_then(|s| s.as_ref());
+        match item {
+            Some(id) => {
+                let def = data.item_registry.get(id);
+                let name = def
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| id.0.clone());
+                let rarity = def.map(|d| d.rarity).unwrap_or(game::Rarity::Common);
+                let color = ui::rarity_color(rarity);
+                lines.push(Line::from(vec![
+                    Span::styled(marker, Style::default().fg(ui::FLAME)),
+                    Span::styled(slot_label, label_style),
+                    Span::styled(name, Style::default().fg(color)),
+                ]));
+            }
+            None => {
+                lines.push(Line::from(vec![
+                    Span::styled(marker, Style::default().fg(ui::FLAME)),
+                    Span::styled(slot_label, label_style),
+                    Span::styled("— empty —", Style::default().fg(ui::BORDER)),
                 ]));
             }
         }
@@ -733,12 +796,12 @@ fn draw_equipment_editor(
     ]));
     lines.push(Line::from(""));
 
-    let slots = [
+    let gear_slots: [(usize, &str, &Option<game::ItemId>); 3] = [
         (0, "Weapon", &adv.equipment.weapon),
         (1, "Armor", &adv.equipment.armor),
         (2, "Accessory", &adv.equipment.accessory),
     ];
-    for (i, label, equipped) in slots {
+    for (i, label, equipped) in gear_slots {
         let is_selected = focused && i == state.adventure_view.setup_equip_slot;
         let marker = if is_selected { " ▸ " } else { "   " };
         let name_style = if is_selected {
@@ -763,6 +826,40 @@ fn draw_equipment_editor(
             Span::styled(marker, Style::default().fg(ui::FLAME)),
             Span::styled(format!("{:<10}", label), name_style),
             Span::styled(equipped_text, equipped_style),
+        ]));
+    }
+
+    // Consumable slots
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "   Items",
+        Style::default().fg(ui::DIM).add_modifier(Modifier::BOLD),
+    )));
+    for slot_i in 0..game::CONSUMABLE_SLOTS {
+        let combined = 3 + slot_i;
+        let is_selected = focused && combined == state.adventure_view.setup_equip_slot;
+        let marker = if is_selected { " ▸ " } else { "   " };
+        let name_style = if is_selected {
+            Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ui::WARM_WHITE)
+        };
+        let item = adv.consumables.get(slot_i).and_then(|s| s.as_ref());
+        let (text, style) = match item {
+            Some(id) => {
+                let name = data
+                    .item_registry
+                    .get(id)
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| id.0.clone());
+                (name, Style::default().fg(ui::WARM_WHITE))
+            }
+            None => ("— empty —".into(), Style::default().fg(ui::DIM)),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(ui::FLAME)),
+            Span::styled(format!("Slot {}    ", slot_i + 1), name_style),
+            Span::styled(text, style),
         ]));
     }
 
@@ -1054,18 +1151,20 @@ fn draw_combat(
         return;
     };
 
+    // Action area height: base 8, +5 if picking consumable
+    let action_h = if state.adventure_view.combat_picking_consumable { 14 } else { 8 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),  // enemies
-            Constraint::Length(6),  // action menu
-            Constraint::Min(4),     // log
-            Constraint::Length(1),  // hint
+            Constraint::Length(7),           // enemies
+            Constraint::Length(action_h),    // action menu
+            Constraint::Min(4),             // log
+            Constraint::Length(1),          // hint
         ])
         .split(area);
 
     draw_combat_enemies(frame, combat, state, chunks[0]);
-    draw_combat_actions(frame, state, adventure, combat, chunks[1]);
+    draw_combat_actions(frame, state, data, adventure, combat, chunks[1]);
     draw_combat_log(frame, combat, chunks[2]);
 
     let hint = Line::from(vec![
@@ -1081,7 +1180,6 @@ fn draw_combat(
         ),
         Span::styled(" confirm", Style::default().fg(ui::DIM)),
     ]);
-    let _ = data;
     frame.render_widget(Paragraph::new(hint), chunks[3]);
 }
 
@@ -1159,6 +1257,7 @@ fn draw_combat_enemies(
 fn draw_combat_actions(
     frame: &mut Frame,
     state: &TavernState,
+    data: &GameData,
     adventure: &game::ActiveAdventure,
     combat: &game::CombatState,
     area: Rect,
@@ -1198,9 +1297,22 @@ fn draw_combat_actions(
     ]));
     lines.push(Line::from(""));
 
-    let actions = ["Attack", "Defend", "Flee"];
+    // Check if the active member has consumables
+    let has_items = match combat.current_actor() {
+        Some(game::CombatActor::Party(i)) => {
+            adventure.party.get(i).map(|m| m.has_consumables()).unwrap_or(false)
+        }
+        _ => false,
+    };
+
+    let mut actions: Vec<&str> = vec!["Attack", "Defend", "Flee"];
+    if has_items {
+        actions.push("Use Item");
+    }
+
     let is_party_turn = matches!(combat.current_actor(), Some(game::CombatActor::Party(_)))
-        && !state.adventure_view.combat_picking_target;
+        && !state.adventure_view.combat_picking_target
+        && !state.adventure_view.combat_picking_consumable;
     for (i, label) in actions.iter().enumerate() {
         let is_selected = is_party_turn && i == state.adventure_view.combat_action_idx;
         let marker = if is_selected { " ▸ " } else { "   " };
@@ -1223,6 +1335,46 @@ fn draw_combat_actions(
             "  ↑↓ pick target  Enter confirm",
             Style::default().fg(ui::FLAME),
         )));
+    }
+
+    if state.adventure_view.combat_picking_consumable {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Items:",
+            Style::default().fg(ui::DIM).add_modifier(Modifier::BOLD),
+        )));
+        if let Some(game::CombatActor::Party(pi)) = combat.current_actor() {
+            if let Some(member) = adventure.party.get(pi) {
+                for (ci, slot) in member.consumables.iter().enumerate() {
+                    let is_sel = ci == state.adventure_view.combat_consumable_idx;
+                    let marker = if is_sel { " ▸ " } else { "   " };
+                    match slot {
+                        Some(id) => {
+                            let name = data
+                                .item_registry
+                                .get(id)
+                                .map(|d| d.name.clone())
+                                .unwrap_or_else(|| id.0.clone());
+                            let style = if is_sel {
+                                Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(ui::WARM_WHITE)
+                            };
+                            lines.push(Line::from(vec![
+                                Span::styled(marker, Style::default().fg(ui::FLAME)),
+                                Span::styled(name, style),
+                            ]));
+                        }
+                        None => {
+                            lines.push(Line::from(vec![
+                                Span::styled(marker, Style::default().fg(ui::FLAME)),
+                                Span::styled("— empty —", Style::default().fg(ui::DIM)),
+                            ]));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
@@ -1326,6 +1478,22 @@ fn draw_results(
                 Style::default().fg(ui::FLAME).add_modifier(Modifier::BOLD),
             ),
         ]));
+        // Preview level-ups
+        for member in &adventure.party {
+            if let Some(adv) = game_state.adventurers.get(member.roster_idx) {
+                let future_xp = adv.xp.saturating_add(adventure.pending_xp);
+                let future_level = game::level_from_xp(future_xp);
+                if future_level > adv.level {
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("  {} levels up to {}!", adv.name, future_level),
+                            Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                }
+            }
+        }
     }
     if !adventure.pending_loot.is_empty() {
         lines.push(Line::from(""));

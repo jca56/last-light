@@ -13,11 +13,16 @@ pub use adventure::{
     resolve_enemy_turn, resolve_party_action, ActiveAdventure, AdventureState, CombatAction,
     CombatActor, CombatState, PartyMember,
 };
-pub use adventurer::{Adventurer, AdventurerStatus};
+#[allow(unused_imports)]
+pub use adventurer::{
+    Adventurer, AdventurerClass, AdventurerStatus, CONSUMABLE_SLOTS, MAX_LEVEL,
+    level_from_xp, xp_for_level, xp_progress, xp_to_next_level,
+};
 pub use crafting::{CraftingCategory, CraftingRecipe, CraftingState};
 pub use gathering::{GatherLocation, GatheringState};
 pub use inventory::Inventory;
-pub use item::{GearStats, ItemCategory, ItemDef, ItemId, ItemRegistry, Rarity};
+#[allow(unused_imports)]
+pub use item::{ConsumableEffect, GearStats, ItemCategory, ItemDef, ItemId, ItemRegistry, Rarity};
 pub use quest::{Encounter, Quest, QuestMap, SquareKind};
 pub use refining::{RefiningRecipe, RefiningState, RefiningStation, StationKind};
 pub use save::{load_game, save_game};
@@ -47,6 +52,10 @@ pub enum GameEvent {
         output_id: ItemId,
         output_qty: u32,
         halted_for_lack_of_input: bool,
+    },
+    LevelUp {
+        adventurer_name: String,
+        new_level: u32,
     },
 }
 
@@ -146,6 +155,35 @@ impl GameState {
             active_adventure: None,
             last_updated: now(),
         }
+    }
+
+    /// Ensure adventurer data is up-to-date after loading a save.
+    pub fn migrate_adventurers(&mut self) {
+        for adv in &mut self.adventurers {
+            adv.init_consumable_slots();
+            // Re-derive level from XP in case the XP table changed
+            let derived = adventurer::level_from_xp(adv.xp);
+            if derived > adv.level {
+                adv.level = derived;
+            }
+        }
+    }
+
+    /// Apply XP to party members and check for level-ups. Returns level-up events.
+    pub fn apply_adventure_xp(&mut self, party: &[PartyMember], xp: u32) -> Vec<GameEvent> {
+        let mut events = Vec::new();
+        for member in party {
+            if let Some(adv) = self.adventurers.get_mut(member.roster_idx) {
+                adv.xp = adv.xp.saturating_add(xp);
+                if let Some(new_level) = adv.try_level_up() {
+                    events.push(GameEvent::LevelUp {
+                        adventurer_name: adv.name.clone(),
+                        new_level,
+                    });
+                }
+            }
+        }
+        events
     }
 
     /// Tick the game forward. Returns events that occurred (for the UI log).

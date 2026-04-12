@@ -10,6 +10,7 @@ pub enum CraftingCategory {
     Weapons,
     Armor,
     Accessories,
+    Consumables,
     Food,
     Drinks,
 }
@@ -20,16 +21,18 @@ impl CraftingCategory {
             CraftingCategory::Weapons => "Weapons",
             CraftingCategory::Armor => "Armor",
             CraftingCategory::Accessories => "Accessories",
+            CraftingCategory::Consumables => "Consumables",
             CraftingCategory::Food => "Food",
             CraftingCategory::Drinks => "Drinks",
         }
     }
 
-    pub fn all() -> [CraftingCategory; 5] {
+    pub fn all() -> [CraftingCategory; 6] {
         [
             CraftingCategory::Weapons,
             CraftingCategory::Armor,
             CraftingCategory::Accessories,
+            CraftingCategory::Consumables,
             CraftingCategory::Food,
             CraftingCategory::Drinks,
         ]
@@ -256,6 +259,52 @@ pub fn register_recipes() -> Vec<CraftingRecipe> {
             output_id: "herbal_tea".into(),
             output_qty: 1,
             duration_per_unit: 30 * SECOND,
+        },
+        // ── Consumables ─────────────────────────────────────────
+        CraftingRecipe {
+            id: "minor_healing_potion".into(),
+            name: "Minor Healing Potion".into(),
+            category: CraftingCategory::Consumables,
+            inputs: vec![("crushed_herbs".into(), 2), ("berry_juice".into(), 1)],
+            output_id: "minor_healing_potion".into(),
+            output_qty: 1,
+            duration_per_unit: 30 * SECOND,
+        },
+        CraftingRecipe {
+            id: "healing_potion".into(),
+            name: "Healing Potion".into(),
+            category: CraftingCategory::Consumables,
+            inputs: vec![("crushed_herbs".into(), 4), ("berry_juice".into(), 2)],
+            output_id: "healing_potion".into(),
+            output_qty: 1,
+            duration_per_unit: 60 * SECOND,
+        },
+        CraftingRecipe {
+            id: "strength_tonic".into(),
+            name: "Strength Tonic".into(),
+            category: CraftingCategory::Consumables,
+            inputs: vec![("crushed_herbs".into(), 2), ("kindling".into(), 1)],
+            output_id: "strength_tonic".into(),
+            output_qty: 1,
+            duration_per_unit: 45 * SECOND,
+        },
+        CraftingRecipe {
+            id: "swiftfoot_elixir".into(),
+            name: "Swiftfoot Elixir".into(),
+            category: CraftingCategory::Consumables,
+            inputs: vec![("crushed_herbs".into(), 2), ("berry_juice".into(), 1)],
+            output_id: "swiftfoot_elixir".into(),
+            output_qty: 1,
+            duration_per_unit: 45 * SECOND,
+        },
+        CraftingRecipe {
+            id: "magespark_draught".into(),
+            name: "Magespark Draught".into(),
+            category: CraftingCategory::Consumables,
+            inputs: vec![("crushed_herbs".into(), 3), ("dried_herbs".into(), 1)],
+            output_id: "magespark_draught".into(),
+            output_qty: 1,
+            duration_per_unit: 45 * SECOND,
         },
     ]
 }

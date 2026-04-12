@@ -150,9 +150,12 @@ pub(super) struct AdventureView {
     pub(super) picking_adventurer: bool,
     pub(super) picker_idx: usize,
     /// Combat: which party member is acting, what action they're on
-    pub(super) combat_action_idx: usize, // 0=Attack 1=Defend 2=Flee
+    pub(super) combat_action_idx: usize, // 0=Attack 1=Defend 2=Flee 3=Use Item
     pub(super) combat_target_idx: usize,
     pub(super) combat_picking_target: bool,
+    /// Consumable picker mode during combat
+    pub(super) combat_picking_consumable: bool,
+    pub(super) combat_consumable_idx: usize,
 }
 
 impl Default for AdventureView {
@@ -172,6 +175,8 @@ impl Default for AdventureView {
             combat_action_idx: 0,
             combat_target_idx: 0,
             combat_picking_target: false,
+            combat_picking_consumable: false,
+            combat_consumable_idx: 0,
         }
     }
 }
@@ -179,7 +184,7 @@ impl Default for AdventureView {
 // ── Crafting sub-view ─────────────────────────────────────────────────────
 
 pub(super) struct CraftingView {
-    pub(super) selected_category: usize, // 0..5
+    pub(super) selected_category: usize, // 0..6
     pub(super) selected_recipe: usize,   // index into recipes_in(category)
     pub(super) quantity: u32,
 }
@@ -437,10 +442,11 @@ fn category_order(cat: &game::ItemCategory) -> u8 {
         game::ItemCategory::RefinedMaterial => 1,
         game::ItemCategory::Food => 2,
         game::ItemCategory::Drink => 3,
-        game::ItemCategory::Weapon => 4,
-        game::ItemCategory::Armor => 5,
-        game::ItemCategory::Accessory => 6,
-        game::ItemCategory::Reagent => 7,
-        game::ItemCategory::Special => 8,
+        game::ItemCategory::Consumable => 4,
+        game::ItemCategory::Weapon => 5,
+        game::ItemCategory::Armor => 6,
+        game::ItemCategory::Accessory => 7,
+        game::ItemCategory::Reagent => 8,
+        game::ItemCategory::Special => 9,
     }
 }

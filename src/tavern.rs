@@ -187,6 +187,16 @@ pub fn run(
                         .push((msg, Style::default().fg(ui::GOLD)));
                     state.auto_scroll(20);
                 }
+                game::GameEvent::LevelUp {
+                    adventurer_name,
+                    new_level,
+                } => {
+                    state.log_messages.push((
+                        format!("{} reached level {}!", adventurer_name, new_level),
+                        Style::default().fg(ui::GOLD),
+                    ));
+                    state.auto_scroll(20);
+                }
             }
         }
 
