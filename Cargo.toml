@@ -1,0 +1,16 @@
+[package]
+name = "last-light"
+version = "0.1.0"
+edition = "2024"
+description = "The Last Light - An innkeeper idle game set in the world of Flamebound"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+image = { version = "0.25", default-features = false, features = ["png"] }
+resvg = "0.47"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.9"
+dirs = "6"
+ratatui-image = { version = "8", default-features = false, features = ["crossterm"] }
