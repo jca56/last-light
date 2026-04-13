@@ -1,6 +1,7 @@
 mod adventure;
 mod adventurer;
 mod crafting;
+pub mod dungeon;
 mod gathering;
 mod inventory;
 mod item;
@@ -23,6 +24,7 @@ pub use gathering::{GatherLocation, GatheringState};
 pub use inventory::Inventory;
 #[allow(unused_imports)]
 pub use item::{ConsumableEffect, GearStats, ItemCategory, ItemDef, ItemId, ItemRegistry, Rarity};
+pub use dungeon::DungeonDef;
 pub use quest::{Encounter, Quest, QuestMap, SquareKind};
 pub use refining::{RefiningRecipe, RefiningState, RefiningStation, StationKind};
 pub use save::{load_game, save_game};
@@ -69,6 +71,7 @@ pub struct GameData {
     pub crafting_recipes: Vec<CraftingRecipe>,
     pub quests: Vec<Quest>,
     pub encounters: Vec<Encounter>,
+    pub dungeons: Vec<DungeonDef>,
 }
 
 impl GameData {
@@ -81,6 +84,7 @@ impl GameData {
             crafting_recipes: crafting::register_recipes(),
             quests: quest::register_quests(),
             encounters: quest::register_encounters(),
+            dungeons: dungeon::register_dungeons(),
         }
     }
 

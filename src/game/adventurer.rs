@@ -74,13 +74,16 @@ const XP_TABLE: [u32; 20] = [
     22_178, // Level 20
 ];
 
-/// Cumulative XP needed to reach a given level.
+/// Cumulative XP needed to reach a given level (the "floor" for that level).
+/// Level 1 = 0 XP, Level 2 = XP_TABLE[0]+XP_TABLE[1] = 100, etc.
 pub fn xp_for_level(level: u32) -> u32 {
     if level <= 1 {
         return 0;
     }
-    let idx = (level as usize).min(MAX_LEVEL as usize) - 1;
-    XP_TABLE[..=idx].iter().sum()
+    // Sum XP_TABLE entries for levels 1 through (level-1).
+    // Index in XP_TABLE is (lvl - 1), so we sum indices 0 through (level-2).
+    let end = (level as usize).saturating_sub(1).min(MAX_LEVEL as usize);
+    XP_TABLE[..end].iter().sum()
 }
 
 /// XP needed to go from current level to the next.

@@ -352,7 +352,25 @@ Weapons, armor, accessories (with stat bonuses and tiers), food, drinks, room up
 - Skill cooldowns/resource limits
 - Tactical depth
 
-#### Phase 3g: Depth & Polish (the "more ideas" list)
+#### Phase 3g: Randomized Dungeons
+- Procedurally generated multi-floor dungeons replace static maps for replayability
+- **DungeonDef**: biome, enemy pool per floor, floor count, floor sizes, boss
+- **Map generation**: rooms + corridors, random placement of encounters/treasure/traps/ladders
+- **Multi-floor**: ladders connect floors; deeper = harder + better loot
+- **Retreat mechanic**: go back up to floor 1 then exit. Keep loot, get 50% XP. Wipe = lose some loot + recovery time
+- **Enemy scaling**: base stats × (1 + 0.15 × floor_depth)
+- **Loot scaling**: more/better treasure on deeper floors, rare drops only from floor 3+
+- **Tier 1 — The Cellar** (2-3 floors, 5×5 to 7×7): Giant Rats, Cellar Spiders. Boss: Rat King
+- **Tier 2 — The Burrows** (3-4 floors, 5×5 to 8×8): Cave Spiders, Giant Snakes. Boss: Brood Mother
+- **Tier 3 — The Wilds** (3-5 floors, 6×6 to 10×10): Goblin Scouts/Warriors/Shamans. Boss: Goblin Chieftain
+- **Tier 4 — The Depths** (4-5 floors, 7×7 to 12×12): harder versions + new enemy types
+- Original "Sunken Cellar" kept as a story quest alongside randomized dungeons
+- Each dungeon regenerates on re-entry (new layout, same enemy pool)
+- Ladder must be found (hidden on map behind fog of war)
+- Enemy portraits for all new enemy types
+- Floor indicator in UI showing current depth
+
+#### Phase 3h: Depth & Polish (the "more ideas" list)
 - Adventurer personalities affecting events
 - Adventurer dialog and party banter
 - Mood/morale system
@@ -360,7 +378,6 @@ Weapons, armor, accessories (with stat bonuses and tiers), food, drinks, room up
 - Loot drops from defeated enemies (combat = bonus gathering)
 - Stories/narrative log entries
 - Bestiary tracking
-- Procedurally generated maps
 - Optional permadeath toggle
 - Multi-day expeditions with wayfaring inns
 - Multiple parallel adventures (split party)

@@ -38,6 +38,8 @@ pub(super) enum TileKey {
     Boss,
     Party,
     Fog,
+    LadderDown,
+    LadderUp,
 }
 
 impl TileKey {
@@ -51,6 +53,8 @@ impl TileKey {
             MapTile::Boss => TileKey::Boss,
             MapTile::Party => TileKey::Party,
             MapTile::Fog => TileKey::Fog,
+            MapTile::LadderDown => TileKey::LadderDown,
+            MapTile::LadderUp => TileKey::LadderUp,
         }
     }
 
@@ -64,6 +68,8 @@ impl TileKey {
             TileKey::Boss => crate::ui::map_tile_bytes(MapTile::Boss),
             TileKey::Party => crate::ui::map_tile_bytes(MapTile::Party),
             TileKey::Fog => crate::ui::map_tile_bytes(MapTile::Fog),
+            TileKey::LadderDown => crate::ui::map_tile_bytes(MapTile::LadderDown),
+            TileKey::LadderUp => crate::ui::map_tile_bytes(MapTile::LadderUp),
         }
     }
 }
@@ -76,6 +82,10 @@ pub(super) struct TileGraphics {
     /// (used for KittyInline backend). Format: full PNG base64 string ready
     /// to splice into a `\x1b_Ga=T,f=100,c=W,r=H;<b64>\x1b\\` command.
     pub(super) kitty_b64: HashMap<TileKey, String>,
+    /// Pre-encoded enemy portrait base64 strings keyed by enemy name.
+    pub(super) enemy_b64: HashMap<String, String>,
+    /// Pre-encoded adventurer portrait base64 strings keyed by adventurer id.
+    pub(super) adv_b64: HashMap<String, String>,
 }
 
 impl TileGraphics {
@@ -96,13 +106,38 @@ impl TileGraphics {
                 TileKey::Boss,
                 TileKey::Party,
                 TileKey::Fog,
+                TileKey::LadderDown,
+                TileKey::LadderUp,
             ] {
                 kitty_b64.insert(key, base64_encode(key.bytes()));
+            }
+            // Pre-encode enemy portraits
+            let mut enemy_b64 = HashMap::new();
+            for name in [
+                "Giant Rat",
+                "Rat King",
+                "Cellar Spider",
+                "Cave Spider",
+                "Giant Snake",
+                "Brood Mother",
+            ] {
+                if let Some(bytes) = crate::ui::enemy_portrait_bytes(name) {
+                    enemy_b64.insert(name.to_string(), base64_encode(bytes));
+                }
+            }
+            // Pre-encode adventurer portraits
+            let mut adv_b64 = HashMap::new();
+            for id in ["torvald", "sylvara", "ember", "aldric", "briar"] {
+                if let Some(bytes) = crate::ui::adventurer_portrait_bytes(id) {
+                    adv_b64.insert(id.to_string(), base64_encode(bytes));
+                }
             }
             return TileGraphics {
                 backend: TileBackend::KittyInline,
                 ratatui_tiles: HashMap::new(),
                 kitty_b64,
+                enemy_b64,
+                adv_b64,
             };
         }
 
@@ -130,11 +165,31 @@ impl TileGraphics {
             backend: TileBackend::Ratatui,
             ratatui_tiles,
             kitty_b64: HashMap::new(),
+            enemy_b64: HashMap::new(),
+            adv_b64: HashMap::new(),
         }
     }
 
     pub(super) fn ratatui_get_mut(&mut self, t: MapTile) -> Option<&mut StatefulProtocol> {
         self.ratatui_tiles.get_mut(&TileKey::from_map(t))
+    }
+
+    /// Build a Kitty escape sequence for an enemy portrait at the given
+    /// cell position. Uses a fixed high ID range (500+) to avoid collisions
+    /// with map tile IDs.
+    pub(super) fn enemy_portrait_escape(
+        &self,
+        enemy_name: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Option<String> {
+        let b64 = self.enemy_b64.get(enemy_name)?;
+        // Use a deterministic ID based on the name hash so different enemies
+        // get different IDs (and don't replace each other).
+        let id: u32 = 500 + (enemy_name.bytes().map(|b| b as u32).sum::<u32>() % 100);
+        Some(format!(
+            "\x1b_Ga=d,d=I,i={id},q=2\x1b\\\x1b_Ga=T,i={id},q=2,f=100,c={cols},r={rows};{b64}\x1b\\"
+        ))
     }
 
     /// Flush a list of queued tile draws directly to stdout, bypassing
@@ -190,21 +245,124 @@ impl TileGraphics {
         let _ = stdout.flush();
     }
 
-    /// Write delete commands for all map-tile image IDs to stdout. Call this
-    /// when leaving the adventure view or quitting the game so Lantern's
-    /// image manager doesn't keep stale images on screen.
+    /// Build a Kitty escape sequence for an adventurer portrait.
+    /// Uses ID range 600+ to avoid collisions.
+    pub(super) fn adv_portrait_escape(
+        &self,
+        adv_id: &str,
+        slot: usize,
+        cols: u16,
+        rows: u16,
+    ) -> Option<String> {
+        let b64 = self.adv_b64.get(adv_id)?;
+        let id: u32 = 600 + slot as u32;
+        Some(format!(
+            "\x1b_Ga=d,d=I,i={id},q=2\x1b\\\x1b_Ga=T,i={id},q=2,f=100,c={cols},r={rows};{b64}\x1b\\"
+        ))
+    }
+
+    /// Flush adventurer portraits directly to stdout.
+    pub(super) fn flush_adv_portraits(
+        &self,
+        portraits: &[(u16, u16, String, usize, u16, u16)],
+    ) {
+        if self.backend != TileBackend::KittyInline {
+            return;
+        }
+        use std::io::Write;
+        let mut out = String::new();
+        out.push_str("\x1b[s");
+        for (x, y, adv_id, slot, cols, rows) in portraits {
+            if let Some(escape) = self.adv_portrait_escape(adv_id, *slot, *cols, *rows) {
+                out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
+                out.push_str(&escape);
+            }
+        }
+        out.push_str("\x1b[u");
+        let mut stdout = std::io::stdout();
+        let _ = stdout.write_all(out.as_bytes());
+        let _ = stdout.flush();
+    }
+
+    /// Delete all adventurer portrait images (IDs 600-620).
+    pub(super) fn cleanup_adv_portraits(&self) {
+        if self.backend != TileBackend::KittyInline {
+            return;
+        }
+        use std::io::Write;
+        let mut out = String::new();
+        for id in 600..620u32 {
+            out.push_str(&format!("\x1b_Ga=d,d=I,i={},q=2\x1b\\", id));
+        }
+        let mut stdout = std::io::stdout();
+        let _ = stdout.write_all(out.as_bytes());
+        let _ = stdout.flush();
+    }
+
+    /// Flush a single enemy portrait directly to stdout via Kitty graphics.
+    pub(super) fn flush_enemy_portrait(
+        &self,
+        x: u16,
+        y: u16,
+        name: &str,
+        cols: u16,
+        rows: u16,
+    ) {
+        if self.backend != TileBackend::KittyInline {
+            return;
+        }
+        let Some(escape) = self.enemy_portrait_escape(name, cols, rows) else {
+            return;
+        };
+        use std::io::Write;
+        let mut out = String::new();
+        out.push_str("\x1b[s"); // save cursor
+        out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1)); // position
+        out.push_str(&escape);
+        out.push_str("\x1b[u"); // restore cursor
+        let mut stdout = std::io::stdout();
+        let _ = stdout.write_all(out.as_bytes());
+        let _ = stdout.flush();
+    }
+
+    /// Delete just the enemy portrait images (IDs 500-599).
+    pub(super) fn cleanup_enemy_portraits(&self) {
+        if self.backend != TileBackend::KittyInline {
+            return;
+        }
+        use std::io::Write;
+        let mut out = String::new();
+        for id in 500..600u32 {
+            out.push_str(&format!("\x1b_Ga=d,d=I,i={},q=2\x1b\\", id));
+        }
+        let mut stdout = std::io::stdout();
+        let _ = stdout.write_all(out.as_bytes());
+        let _ = stdout.flush();
+    }
+
+    /// Write delete commands for all map-tile and enemy portrait image IDs to
+    /// stdout. Call this when leaving the adventure view or quitting the game
+    /// so Lantern's image manager doesn't keep stale images on screen.
     pub(super) fn cleanup_all(&self) {
         if self.backend != TileBackend::KittyInline {
             return;
         }
         use std::io::Write;
         let mut out = String::new();
-        // Cover the full possible ID range we use (5x5 map with id = row*100+col+1)
+        // Map tiles (5x5 map with id = row*100+col+1)
         for y in 0..10u32 {
             for x in 0..10u32 {
                 let id = y * 100 + x + 1;
                 out.push_str(&format!("\x1b_Ga=d,d=I,i={},q=2\x1b\\", id));
             }
+        }
+        // Enemy portraits (IDs 500-599)
+        for id in 500..600u32 {
+            out.push_str(&format!("\x1b_Ga=d,d=I,i={},q=2\x1b\\", id));
+        }
+        // Adventurer portraits (IDs 600-620)
+        for id in 600..620u32 {
+            out.push_str(&format!("\x1b_Ga=d,d=I,i={},q=2\x1b\\", id));
         }
         let mut stdout = std::io::stdout();
         let _ = stdout.write_all(out.as_bytes());

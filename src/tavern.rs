@@ -200,26 +200,44 @@ pub fn run(
             }
         }
 
-        // Reset the pending Kitty queue for this frame
+        // Reset the pending Kitty queues for this frame
+        let had_adv_portraits = !state.pending_adv_portraits.is_empty();
         state.pending_kitty_tiles.clear();
+        state.pending_enemy_portrait = None;
+        state.pending_adv_portraits.clear();
 
         terminal.draw(|frame| draw(frame, &mut state, data, game_state))?;
 
-        // After ratatui finishes drawing, flush any queued Kitty tile draws
-        // directly to stdout. This bypasses ratatui's diff renderer entirely
-        // for the map tiles, ensuring escape sequences reach the terminal
-        // exactly as we built them.
+        // After ratatui finishes drawing, flush any queued Kitty graphics
+        // directly to stdout.
         if !state.pending_kitty_tiles.is_empty()
             || !state.prev_frame_kitty_ids.is_empty()
         {
             let pending = std::mem::take(&mut state.pending_kitty_tiles);
             let prev_ids = std::mem::take(&mut state.prev_frame_kitty_ids);
             state.tile_graphics.flush_pending(&pending, &prev_ids);
-            // Remember IDs we drew this frame so next frame can detect leftovers
             state.prev_frame_kitty_ids = pending.iter().map(|t| t.3).collect();
-            // Put pending back in case anything still needs it (we cleared it earlier)
             state.pending_kitty_tiles = pending;
             state.pending_kitty_tiles.clear();
+        }
+
+        // Flush enemy portrait (if any)
+        if let Some((x, y, ref name, cols, rows)) = state.pending_enemy_portrait {
+            state
+                .tile_graphics
+                .flush_enemy_portrait(x, y, name, cols, rows);
+        }
+
+        // Flush adventurer portraits (if any), or clean up if we had some last
+        // frame but don't this frame (view switched away).
+        if !state.pending_adv_portraits.is_empty() {
+            // Clean old ones first then draw new
+            state.tile_graphics.cleanup_adv_portraits();
+            let portraits = std::mem::take(&mut state.pending_adv_portraits);
+            state.tile_graphics.flush_adv_portraits(&portraits);
+        } else if had_adv_portraits {
+            // We had portraits last frame but not this frame — clean up
+            state.tile_graphics.cleanup_adv_portraits();
         }
 
         if event::poll(std::time::Duration::from_millis(100))? {

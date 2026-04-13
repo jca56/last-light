@@ -3,7 +3,7 @@
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Frame;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
@@ -80,7 +80,7 @@ fn draw_adventure_tabs(frame: &mut Frame, state: &TavernState, area: Rect) {
 
 fn draw_roster(
     frame: &mut Frame,
-    state: &TavernState,
+    state: &mut TavernState,
     data: &GameData,
     game_state: &GameState,
     area: Rect,
@@ -96,7 +96,7 @@ fn draw_roster(
 
     // Left: adventurer list
     draw_roster_list(frame, state, game_state, chunks[0]);
-    // Right: selected adventurer detail
+    // Right: selected adventurer detail (with portrait)
     draw_roster_detail(frame, state, data, game_state, chunks[1]);
 }
 
@@ -155,7 +155,7 @@ fn draw_roster_list(
 
 fn draw_roster_detail(
     frame: &mut Frame,
-    state: &TavernState,
+    state: &mut TavernState,
     data: &GameData,
     game_state: &GameState,
     area: Rect,
@@ -184,6 +184,49 @@ fn draw_roster_detail(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // Split: portrait (left) + info (right)
+    let portrait_w: u16 = 12;
+    let detail_split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(portrait_w.min(inner.width / 3)),
+            Constraint::Min(20),
+        ])
+        .split(inner);
+
+    // Portrait
+    let p_area = detail_split[0];
+    use super::tile_graphics::TileBackend;
+    if state.tile_graphics.backend == TileBackend::KittyInline {
+        state.pending_adv_portraits.push((
+            p_area.x,
+            p_area.y,
+            adv.id.clone(),
+            10 + idx, // use slot 10+ for roster to avoid colliding with combat slots
+            p_area.width,
+            p_area.height.min(6),
+        ));
+        let buf = frame.buffer_mut();
+        for dy in 0..p_area.height.min(6) {
+            for dx in 0..p_area.width {
+                if let Some(cell) = buf.cell_mut((p_area.x + dx, p_area.y + dy)) {
+                    cell.set_symbol(" ");
+                    cell.set_skip(true);
+                }
+            }
+        }
+    } else if let Some(bytes) = ui::adventurer_portrait_bytes(&adv.id) {
+        let portrait_area = Rect {
+            x: p_area.x,
+            y: p_area.y,
+            width: p_area.width,
+            height: p_area.height.min(6),
+        };
+        let lines_p = crate::halfblock::png_to_halfblock(bytes, portrait_area.width);
+        frame.render_widget(Paragraph::new(lines_p), portrait_area);
+    }
+
+    let info_area = detail_split[1];
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(""));
 
@@ -374,37 +417,120 @@ fn draw_roster_detail(
         ),
     ]));
 
-    // Hint bar
-    lines.push(Line::from(""));
-    if equip_focused {
+    // Item picker or hint bar
+    let picker_active = state.adventure_view.roster_focus == RosterFocus::ItemPicker;
+    if picker_active {
+        // Show the item picker list
+        let slot = state.adventure_view.roster_equip_slot;
+        let registry = game::ItemRegistry::new();
+        let compatible = crate::tavern::input::compatible_items_for_slot(game_state, slot);
+
+        lines.push(Line::from(""));
+        let slot_label = if slot <= 2 {
+            match slot {
+                0 => "Weapon",
+                1 => "Armor",
+                _ => "Accessory",
+            }
+        } else {
+            "Consumable"
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  Choose {} ─────────────────", slot_label),
+            Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD),
+        )));
+
+        if compatible.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  No compatible items in inventory.",
+                Style::default().fg(ui::DIM),
+            )));
+        } else {
+            for (i, (item_id, qty)) in compatible.iter().enumerate() {
+                let is_selected = i == state.adventure_view.roster_picker_idx;
+                let marker = if is_selected { " ▸ " } else { "   " };
+                let def = registry.get(item_id);
+                let name = def
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| item_id.0.clone());
+                let rarity = def.map(|d| d.rarity).unwrap_or(game::Rarity::Common);
+                let color = ui::rarity_color(rarity);
+                let name_style = if is_selected {
+                    Style::default().fg(color).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(color)
+                };
+
+                // Build stat hint
+                let mut stat_str = String::new();
+                if let Some(gs) = def.and_then(|d| d.properties.gear_stats.as_ref()) {
+                    let parts: Vec<String> = [
+                        (gs.hp, "HP"),
+                        (gs.strength, "STR"),
+                        (gs.dexterity, "DEX"),
+                        (gs.intellect, "INT"),
+                    ]
+                    .iter()
+                    .filter(|(v, _)| *v != 0)
+                    .map(|(v, l)| format!("{:+}{}", v, l))
+                    .collect();
+                    if !parts.is_empty() {
+                        stat_str = format!("  {}", parts.join(" "));
+                    }
+                }
+
+                lines.push(Line::from(vec![
+                    Span::styled(marker, Style::default().fg(ui::FLAME)),
+                    Span::styled(name, name_style),
+                    Span::styled(stat_str, Style::default().fg(ui::DIM)),
+                    Span::styled(format!("  x{}", qty), Style::default().fg(ui::DIM)),
+                ]));
+            }
+        }
+
+        lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("  ↑↓", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
-            Span::styled(" slot  ", Style::default().fg(ui::DIM)),
+            Span::styled(" select  ", Style::default().fg(ui::DIM)),
             Span::styled("Enter", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
             Span::styled(" equip  ", Style::default().fg(ui::DIM)),
-            Span::styled("X", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
-            Span::styled(" unequip  ", Style::default().fg(ui::DIM)),
             Span::styled("Esc", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
-            Span::styled(" back", Style::default().fg(ui::DIM)),
+            Span::styled(" cancel", Style::default().fg(ui::DIM)),
         ]));
     } else {
-        lines.push(Line::from(vec![
-            Span::styled("  ↑↓", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
-            Span::styled(" browse  ", Style::default().fg(ui::DIM)),
-            Span::styled("Enter", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
-            Span::styled(" equip  ", Style::default().fg(ui::DIM)),
-            Span::styled("Tab", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
-            Span::styled(" quest board", Style::default().fg(ui::DIM)),
-        ]));
+        // Standard hint bar
+        lines.push(Line::from(""));
+        if equip_focused {
+            lines.push(Line::from(vec![
+                Span::styled("  ↑↓", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
+                Span::styled(" slot  ", Style::default().fg(ui::DIM)),
+                Span::styled("Enter", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
+                Span::styled(" equip  ", Style::default().fg(ui::DIM)),
+                Span::styled("X", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
+                Span::styled(" unequip  ", Style::default().fg(ui::DIM)),
+                Span::styled("Esc", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
+                Span::styled(" back", Style::default().fg(ui::DIM)),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled("  ↑↓", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
+                Span::styled(" browse  ", Style::default().fg(ui::DIM)),
+                Span::styled("Enter", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
+                Span::styled(" equip  ", Style::default().fg(ui::DIM)),
+                Span::styled("Tab", Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)),
+                Span::styled(" quest board", Style::default().fg(ui::DIM)),
+            ]));
+        }
     }
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines), info_area);
 }
 
 // ── Quest Board ───────────────────────────────────────────────────────────
 
 fn draw_quest_board(frame: &mut Frame, state: &TavernState, data: &GameData, area: Rect) {
-    if data.quests.is_empty() {
+    let total = data.quests.len() + data.dungeons.len();
+    if total == 0 {
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -421,19 +547,35 @@ fn draw_quest_board(frame: &mut Frame, state: &TavernState, data: &GameData, are
         .constraints([Constraint::Min(10), Constraint::Length(1)])
         .split(area);
 
-    // Cards in a single column for now (only 1-3 quests in MVP)
-    let n = data.quests.len() as u32;
+    // Combined list: story quests first, then dungeons
+    let n = total as u32;
     let constraints: Vec<Constraint> = (0..n).map(|_| Constraint::Ratio(1, n)).collect();
     let card_areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(chunks[0]);
 
-    for (i, quest) in data.quests.iter().enumerate() {
-        if let Some(slot) = card_areas.get(i) {
-            let padded = inset_rect(*slot, 2, 1);
-            draw_quest_card(frame, quest, padded, i == state.adventure_view.selected_quest);
+    let mut card_idx = 0;
+    // Story quests
+    for quest in &data.quests {
+        if let Some(slot) = card_areas.get(card_idx) {
+            let padded = inset_rect(*slot, 2, 0);
+            draw_quest_card(frame, quest, padded, card_idx == state.adventure_view.selected_quest);
         }
+        card_idx += 1;
+    }
+    // Dungeons
+    for dungeon in &data.dungeons {
+        if let Some(slot) = card_areas.get(card_idx) {
+            let padded = inset_rect(*slot, 2, 0);
+            draw_dungeon_card(
+                frame,
+                dungeon,
+                padded,
+                card_idx == state.adventure_view.selected_quest,
+            );
+        }
+        card_idx += 1;
     }
 
     let hint = Line::from(vec![
@@ -450,6 +592,73 @@ fn draw_quest_board(frame: &mut Frame, state: &TavernState, data: &GameData, are
         Span::styled(" set up party", Style::default().fg(ui::DIM)),
     ]);
     frame.render_widget(Paragraph::new(hint), chunks[1]);
+}
+
+fn draw_dungeon_card(
+    frame: &mut Frame,
+    dungeon: &game::DungeonDef,
+    area: Rect,
+    selected: bool,
+) {
+    let border_color = if selected { ui::GOLD } else { ui::BORDER };
+    let title_marker = if selected { " ▸ " } else { "   " };
+    let title_style = if selected {
+        Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(ui::WARM_WHITE)
+    };
+
+    let tier_label = format!("T{}", dungeon.tier);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
+        .title(Line::from(vec![
+            Span::styled(
+                format!("{}{}", title_marker, dungeon.name),
+                title_style,
+            ),
+            Span::styled(
+                format!("  [{}]", tier_label),
+                Style::default().fg(ui::FLAME),
+            ),
+            Span::styled(
+                "  ⟳ Randomized",
+                Style::default().fg(ui::FOREST_GREEN),
+            ),
+        ]))
+        .style(Style::default().bg(ui::SHADOW_BG));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    let desc_lines = wrap_text(&dungeon.description, inner.width.saturating_sub(4) as usize);
+    for dl in desc_lines {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(dl, Style::default().fg(ui::WARM_WHITE)),
+        ]));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("  Party: ", Style::default().fg(ui::DIM)),
+        Span::styled(
+            format!("{}-{}", dungeon.min_party, dungeon.max_party),
+            Style::default().fg(ui::WARM_WHITE),
+        ),
+        Span::styled("    Lv: ", Style::default().fg(ui::DIM)),
+        Span::styled(
+            format!("{}", dungeon.recommended_level),
+            Style::default().fg(ui::WARM_WHITE),
+        ),
+        Span::styled("    Floors: ", Style::default().fg(ui::DIM)),
+        Span::styled(
+            format!("{}-{}", dungeon.min_floors, dungeon.max_floors),
+            Style::default().fg(ui::WARM_WHITE),
+        ),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_quest_card(frame: &mut Frame, quest: &Quest, area: Rect, selected: bool) {
@@ -527,8 +736,34 @@ fn draw_party_setup(
     game_state: &GameState,
     area: Rect,
 ) {
-    let Some(quest) = data.quests.get(state.adventure_view.selected_quest) else {
-        return;
+    let idx = state.adventure_view.selected_quest;
+    let quest_count = data.quests.len();
+
+    // Extract name, party limits, and reward info from either quest or dungeon
+    let (name, min_p, max_p, reward_text) = if idx < quest_count {
+        let Some(q) = data.quests.get(idx) else {
+            return;
+        };
+        (
+            q.name.clone(),
+            q.min_party,
+            q.max_party,
+            format!("Reward: {}g + {} XP", q.completion_gold, q.xp_reward),
+        )
+    } else {
+        let di = idx - quest_count;
+        let Some(d) = data.dungeons.get(di) else {
+            return;
+        };
+        (
+            d.name.clone(),
+            d.min_party,
+            d.max_party,
+            format!(
+                "Reward: {}g + {} XP  ·  {}-{} floors",
+                d.completion_gold, d.completion_xp, d.min_floors, d.max_floors
+            ),
+        )
     };
 
     let chunks = Layout::default()
@@ -540,23 +775,20 @@ fn draw_party_setup(
         ])
         .split(area);
 
-    // Quest summary
+    // Quest/dungeon summary
     let mut summary: Vec<Line> = Vec::new();
     summary.push(Line::from(""));
     summary.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(
-            quest.name.clone(),
+            name,
             Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("    Party: {}-{}    ", quest.min_party, quest.max_party),
+            format!("    Party: {}-{}    ", min_p, max_p),
             Style::default().fg(ui::DIM),
         ),
-        Span::styled(
-            format!("Reward: {}g + {} XP", quest.completion_gold, quest.xp_reward),
-            Style::default().fg(ui::DIM),
-        ),
+        Span::styled(reward_text, Style::default().fg(ui::DIM)),
     ]));
     frame.render_widget(Paragraph::new(summary), chunks[0]);
 
@@ -895,21 +1127,51 @@ fn draw_in_adventure(
     let Some(adventure) = &game_state.active_adventure else {
         return;
     };
-    let Some(quest) = data.quest(&adventure.quest_id) else {
+
+    // Use dungeon map if present, otherwise fall back to the static quest map
+    let map: &game::QuestMap;
+    let quest_opt = data.quest(&adventure.quest_id);
+    let dungeon_map_ref;
+    if let Some(dm) = adventure.active_map() {
+        dungeon_map_ref = dm;
+        map = dungeon_map_ref;
+    } else if let Some(q) = &quest_opt {
+        map = &q.map;
+    } else {
         return;
+    };
+
+    let name = adventure
+        .dungeon_id
+        .as_ref()
+        .and_then(|did| data.dungeons.iter().find(|d| d.id == *did))
+        .map(|d| d.name.clone())
+        .or_else(|| quest_opt.map(|q| q.name.clone()))
+        .unwrap_or_else(|| adventure.quest_id.clone());
+
+    // Floor indicator for dungeons
+    let title = if adventure.dungeon_id.is_some() {
+        format!(
+            "{} — Floor {}/{}",
+            name,
+            adventure.current_floor + 1,
+            adventure.total_floors
+        )
+    } else {
+        name
     };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(17),    // map area (large enough for 5x5 grid of tiles)
-            Constraint::Length(6),  // info + log
-            Constraint::Length(1),  // hint
+            Constraint::Min(17), // map area
+            Constraint::Length(6), // info + log
+            Constraint::Length(1), // hint
         ])
         .split(area);
 
-    draw_map(frame, state, adventure, quest, chunks[0]);
-    draw_adventure_info(frame, adventure, quest, chunks[1]);
+    draw_map_with(frame, state, adventure, map, &title, chunks[0]);
+    draw_adventure_info_with(frame, adventure, map, chunks[1]);
 
     let hint = Line::from(vec![
         Span::raw("  "),
@@ -919,19 +1181,30 @@ fn draw_in_adventure(
         ),
         Span::styled(" move  ", Style::default().fg(ui::DIM)),
         Span::styled(
+            "Enter",
+            Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" interact  ", Style::default().fg(ui::DIM)),
+        Span::styled(
+            "I",
+            Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" use item  ", Style::default().fg(ui::DIM)),
+        Span::styled(
             "Esc",
             Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" abandon quest", Style::default().fg(ui::DIM)),
+        Span::styled(" abandon", Style::default().fg(ui::DIM)),
     ]);
     frame.render_widget(Paragraph::new(hint), chunks[2]);
 }
 
-fn draw_map(
+fn draw_map_with(
     frame: &mut Frame,
     state: &mut TavernState,
     adventure: &game::ActiveAdventure,
-    quest: &Quest,
+    map: &game::QuestMap,
+    title: &str,
     area: Rect,
 ) {
     let block = Block::default()
@@ -939,7 +1212,7 @@ fn draw_map(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(ui::FOREST_GREEN))
         .title(Span::styled(
-            format!(" {} ", quest.name),
+            format!(" {} ", title),
             Style::default()
                 .fg(ui::FOREST_GREEN)
                 .add_modifier(Modifier::BOLD),
@@ -948,39 +1221,62 @@ fn draw_map(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let map = &quest.map;
     let tile_w = MAP_TILE_W;
     let tile_h = MAP_TILE_H;
 
-    let total_w = map.width as u16 * tile_w;
-    let total_h = map.height as u16 * tile_h;
+    // How many tiles fit in the viewport
+    let view_cols = (inner.width / tile_w) as u32;
+    let view_rows = (inner.height / tile_h) as u32;
 
-    if total_w > inner.width || total_h > inner.height {
-        let lines = vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "  Map too large for terminal.",
-                Style::default().fg(ui::DIM),
-            )),
-        ];
-        frame.render_widget(Paragraph::new(lines), inner);
+    if view_cols == 0 || view_rows == 0 {
         return;
     }
 
-    let start_x = inner.x + (inner.width - total_w) / 2;
-    let start_y = inner.y + (inner.height - total_h) / 2;
+    // Camera: center on player position, clamped to map edges
+    let (px, py) = adventure.position;
+    let cam_x = if map.width <= view_cols {
+        0 // map fits entirely — no scrolling needed
+    } else {
+        let half = view_cols / 2;
+        (px as i32 - half as i32)
+            .max(0)
+            .min((map.width - view_cols) as i32) as u32
+    };
+    let cam_y = if map.height <= view_rows {
+        0
+    } else {
+        let half = view_rows / 2;
+        (py as i32 - half as i32)
+            .max(0)
+            .min((map.height - view_rows) as i32) as u32
+    };
 
-    for y in 0..map.height {
-        for x in 0..map.width {
-            let tx = start_x + x as u16 * tile_w;
-            let ty = start_y + y as u16 * tile_h;
+    // Visible tile range
+    let vis_cols = view_cols.min(map.width);
+    let vis_rows = view_rows.min(map.height);
+
+    // Center the visible region within the inner area
+    let used_w = vis_cols as u16 * tile_w;
+    let used_h = vis_rows as u16 * tile_h;
+    let off_x = inner.x + (inner.width.saturating_sub(used_w)) / 2;
+    let off_y = inner.y + (inner.height.saturating_sub(used_h)) / 2;
+
+    for vy in 0..vis_rows {
+        for vx in 0..vis_cols {
+            let mx = cam_x + vx;
+            let my = cam_y + vy;
+            if mx >= map.width || my >= map.height {
+                continue;
+            }
+            let tx = off_x + vx as u16 * tile_w;
+            let ty = off_y + vy as u16 * tile_h;
             let tile_area = Rect {
                 x: tx,
                 y: ty,
                 width: tile_w,
                 height: tile_h,
             };
-            draw_map_tile(frame, state, adventure, map, x, y, tile_area);
+            draw_map_tile(frame, state, adventure, map, mx, my, tile_area);
         }
     }
 }
@@ -1025,6 +1321,8 @@ fn draw_map_tile(
                 }
             }
             Some(SquareKind::Boss { .. }) => ui::MapTile::Boss,
+            Some(SquareKind::LadderDown) => ui::MapTile::LadderDown,
+            Some(SquareKind::LadderUp) => ui::MapTile::LadderUp,
             None => ui::MapTile::Fog,
         }
     };
@@ -1064,10 +1362,10 @@ fn draw_map_tile(
     }
 }
 
-fn draw_adventure_info(
+fn draw_adventure_info_with(
     frame: &mut Frame,
     adventure: &game::ActiveAdventure,
-    quest: &Quest,
+    map: &game::QuestMap,
     area: Rect,
 ) {
     let block = Block::default()
@@ -1084,7 +1382,7 @@ fn draw_adventure_info(
 
     // Current square description
     let (cx, cy) = adventure.position;
-    let square_desc = match quest.map.get(cx, cy) {
+    let square_desc = match map.get(cx, cy) {
         Some(SquareKind::Empty) => "An empty stretch of cellar floor.",
         Some(SquareKind::Treasure { .. }) => {
             if adventure.is_completed(cx, cy) {
@@ -1109,6 +1407,8 @@ fn draw_adventure_info(
             }
         }
         Some(SquareKind::Boss { .. }) => "A massive shape stirs in the gloom.",
+        Some(SquareKind::LadderDown) => "A ladder descends into darkness below.",
+        Some(SquareKind::LadderUp) => "A ladder leads back up to the previous floor.",
         None => "",
     };
 
@@ -1139,7 +1439,7 @@ fn draw_adventure_info(
 
 fn draw_combat(
     frame: &mut Frame,
-    state: &TavernState,
+    state: &mut TavernState,
     data: &GameData,
     game_state: &GameState,
     area: Rect,
@@ -1151,21 +1451,38 @@ fn draw_combat(
         return;
     };
 
-    // Action area height: base 8, +5 if picking consumable
-    let action_h = if state.adventure_view.combat_picking_consumable { 14 } else { 8 };
+    // Layout: enemy portrait+list, party portraits, actions, log
+    let action_h: u16 = if state.adventure_view.combat_picking_consumable { 14 } else { 10 };
+    let party_row_h: u16 = 5; // small portrait row for party
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),           // enemies
+            Constraint::Min(8),              // portrait + enemies
+            Constraint::Length(party_row_h), // party portraits
             Constraint::Length(action_h),    // action menu
-            Constraint::Min(4),             // log
-            Constraint::Length(1),          // hint
+            Constraint::Length(6),           // log
+            Constraint::Length(1),           // hint
         ])
         .split(area);
 
-    draw_combat_enemies(frame, combat, state, chunks[0]);
-    draw_combat_actions(frame, state, data, adventure, combat, chunks[1]);
-    draw_combat_log(frame, combat, chunks[2]);
+    // Top row: enemy portrait on left, enemy list on right
+    let portrait_w: u16 = 20;
+    let top_split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(portrait_w), Constraint::Min(20)])
+        .split(chunks[0]);
+
+    draw_combat_portrait(frame, state, combat, top_split[0]);
+    draw_combat_enemies(frame, combat, state, top_split[1]);
+
+    // Party portraits row
+    draw_combat_party_row(frame, state, adventure, combat, game_state, chunks[1]);
+
+    // Action menu with damage previews
+    draw_combat_actions(frame, state, data, adventure, combat, chunks[2]);
+
+    // Combat log
+    draw_combat_log(frame, combat, chunks[3]);
 
     let hint = Line::from(vec![
         Span::raw("  "),
@@ -1180,7 +1497,199 @@ fn draw_combat(
         ),
         Span::styled(" confirm", Style::default().fg(ui::DIM)),
     ]);
-    frame.render_widget(Paragraph::new(hint), chunks[3]);
+    frame.render_widget(Paragraph::new(hint), chunks[4]);
+}
+
+fn draw_combat_portrait(
+    frame: &mut Frame,
+    state: &mut TavernState,
+    combat: &game::CombatState,
+    area: Rect,
+) {
+    // Show portrait of the targeted enemy (if picking target) or the first alive enemy
+    let enemy_name = if state.adventure_view.combat_picking_target {
+        combat
+            .enemies
+            .get(state.adventure_view.combat_target_idx)
+            .map(|e| e.name.clone())
+            .unwrap_or_default()
+    } else {
+        combat
+            .enemies
+            .iter()
+            .find(|e| e.current_hp > 0)
+            .map(|e| e.name.clone())
+            .unwrap_or_default()
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ui::EMBER))
+        .style(Style::default().bg(ui::SHADOW_BG));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    use super::tile_graphics::TileBackend;
+    if state.tile_graphics.backend == TileBackend::KittyInline && !enemy_name.is_empty() {
+        // Queue the enemy portrait for Kitty rendering after draw
+        state.pending_enemy_portrait = Some((
+            inner.x,
+            inner.y,
+            enemy_name,
+            inner.width,
+            inner.height,
+        ));
+        // Mark cells as skip
+        let buf = frame.buffer_mut();
+        for dy in 0..inner.height {
+            for dx in 0..inner.width {
+                if let Some(cell) = buf.cell_mut((inner.x + dx, inner.y + dy)) {
+                    cell.set_symbol(" ");
+                    cell.set_skip(true);
+                }
+            }
+        }
+    } else {
+        // Halfblock fallback
+        if let Some(bytes) = ui::enemy_portrait_bytes(&enemy_name) {
+            let lines = crate::halfblock::png_to_halfblock(bytes, inner.width);
+            frame.render_widget(Paragraph::new(lines), inner);
+        }
+    }
+}
+
+fn draw_combat_party_row(
+    frame: &mut Frame,
+    state: &mut TavernState,
+    adventure: &game::ActiveAdventure,
+    combat: &game::CombatState,
+    game_state: &GameState,
+    area: Rect,
+) {
+    // Split horizontally: one column per party member
+    let n = adventure.party.len();
+    if n == 0 {
+        return;
+    }
+    let constraints: Vec<Constraint> = (0..n)
+        .map(|_| Constraint::Ratio(1, n as u32))
+        .collect();
+    let slots = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+
+    let is_party_turn = matches!(combat.current_actor(), Some(game::CombatActor::Party(_)));
+    let active_idx = match combat.current_actor() {
+        Some(game::CombatActor::Party(i)) => Some(i),
+        _ => None,
+    };
+
+    for (i, member) in adventure.party.iter().enumerate() {
+        let Some(adv) = game_state.adventurers.get(member.roster_idx) else {
+            continue;
+        };
+        let is_active = is_party_turn && active_idx == Some(i);
+        let _border_color = if member.downed {
+            ui::DIM
+        } else if is_active {
+            ui::GOLD
+        } else {
+            ui::BORDER
+        };
+
+        let slot_area = slots[i];
+
+        // Split each slot: portrait (left 8 cols) + info (right)
+        let portrait_w: u16 = 8;
+        let inner_split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(portrait_w.min(slot_area.width / 2)),
+                Constraint::Min(8),
+            ])
+            .split(slot_area);
+
+        // Portrait area (Kitty or halfblock)
+        let p_area = inner_split[0];
+        use super::tile_graphics::TileBackend;
+        if state.tile_graphics.backend == TileBackend::KittyInline {
+            state.pending_adv_portraits.push((
+                p_area.x,
+                p_area.y,
+                adv.id.clone(),
+                i,
+                p_area.width,
+                p_area.height,
+            ));
+            let buf = frame.buffer_mut();
+            for dy in 0..p_area.height {
+                for dx in 0..p_area.width {
+                    if let Some(cell) = buf.cell_mut((p_area.x + dx, p_area.y + dy)) {
+                        cell.set_symbol(" ");
+                        cell.set_skip(true);
+                    }
+                }
+            }
+        } else if let Some(bytes) = ui::adventurer_portrait_bytes(&adv.id) {
+            let lines = crate::halfblock::png_to_halfblock(bytes, p_area.width);
+            frame.render_widget(Paragraph::new(lines), p_area);
+        }
+
+        // Info area: name + HP bar
+        let info = inner_split[1];
+        let hp_ratio = if member.max_hp > 0 {
+            member.current_hp.max(0) as f64 / member.max_hp as f64
+        } else {
+            0.0
+        };
+        let bar_w = info.width.saturating_sub(2) as usize;
+        let filled = (hp_ratio * bar_w as f64) as usize;
+        let bar: String = "█".repeat(filled) + &"░".repeat(bar_w.saturating_sub(filled));
+        let bar_color = if member.downed {
+            ui::DIM
+        } else if hp_ratio < 0.34 {
+            ui::EMBER
+        } else if hp_ratio < 0.67 {
+            ui::FLAME
+        } else {
+            ui::FOREST_GREEN
+        };
+
+        let name_style = if member.downed {
+            Style::default().fg(ui::DIM)
+        } else if is_active {
+            Style::default()
+                .fg(ui::GOLD)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ui::WARM_WHITE)
+        };
+
+        let active_marker = if is_active { "⚔ " } else { "  " };
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(vec![
+            Span::styled(
+                active_marker,
+                Style::default().fg(ui::FLAME),
+            ),
+            Span::styled(adv.name.clone(), name_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(bar, Style::default().fg(bar_color)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                format!("{}/{}", member.current_hp.max(0), member.max_hp),
+                Style::default().fg(ui::DIM),
+            ),
+        ]));
+
+        frame.render_widget(Paragraph::new(lines), info);
+    }
 }
 
 fn draw_combat_enemies(
@@ -1262,39 +1771,35 @@ fn draw_combat_actions(
     combat: &game::CombatState,
     area: Rect,
 ) {
+    // Show whose turn it is — prominently in the title bar
+    let (actor_label, title_color) = match combat.current_actor() {
+        Some(game::CombatActor::Party(i)) => {
+            let name = adventure
+                .party
+                .get(i)
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| "???".into());
+            (format!(" ⚔ {}'s Turn ", name), ui::GOLD)
+        }
+        Some(game::CombatActor::Enemy(_)) => (" Enemy Turn... ".into(), ui::EMBER),
+        None => (" ... ".into(), ui::DIM),
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ui::GOLD))
+        .border_style(Style::default().fg(title_color))
         .title(Span::styled(
-            " Action ",
-            Style::default().fg(ui::GOLD).add_modifier(Modifier::BOLD),
+            actor_label,
+            Style::default()
+                .fg(title_color)
+                .add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(ui::SHADOW_BG));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Show whose turn it is
-    let actor_label = match combat.current_actor() {
-        Some(game::CombatActor::Party(i)) => {
-            adventure
-                .party
-                .get(i)
-                .map(|m| format!("{}'s turn", m.name))
-                .unwrap_or_else(|| "Party turn".into())
-        }
-        Some(game::CombatActor::Enemy(_)) => "Enemy turn...".into(),
-        None => "...".into(),
-    };
-
     let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled(
-            actor_label,
-            Style::default().fg(ui::WARM_WHITE).add_modifier(Modifier::BOLD),
-        ),
-    ]));
     lines.push(Line::from(""));
 
     // Check if the active member has consumables
@@ -1305,15 +1810,40 @@ fn draw_combat_actions(
         _ => false,
     };
 
-    let mut actions: Vec<&str> = vec!["Attack", "Defend", "Flee"];
-    if has_items {
-        actions.push("Use Item");
-    }
+    // Get current party member's stats for damage preview
+    let actor_stats = match combat.current_actor() {
+        Some(game::CombatActor::Party(i)) => adventure.party.get(i),
+        _ => None,
+    };
+    let atk_dmg = actor_stats
+        .map(|m| m.strength.max(m.dexterity).max(1))
+        .unwrap_or(0);
+    let avg_dex = {
+        let alive: Vec<&game::PartyMember> =
+            adventure.party.iter().filter(|p| !p.downed).collect();
+        if alive.is_empty() {
+            0
+        } else {
+            alive.iter().map(|p| p.dexterity).sum::<i32>() / alive.len() as i32
+        }
+    };
+
+    let action_info: Vec<(&str, String)> = {
+        let mut v = vec![
+            ("Attack", format!("~{} damage", atk_dmg)),
+            ("Defend", "halves incoming damage".into()),
+            ("Flee", format!("DEX {} vs DC 10", avg_dex)),
+        ];
+        if has_items {
+            v.push(("Use Item", "use a consumable".into()));
+        }
+        v
+    };
 
     let is_party_turn = matches!(combat.current_actor(), Some(game::CombatActor::Party(_)))
         && !state.adventure_view.combat_picking_target
         && !state.adventure_view.combat_picking_consumable;
-    for (i, label) in actions.iter().enumerate() {
+    for (i, (label, preview)) in action_info.iter().enumerate() {
         let is_selected = is_party_turn && i == state.adventure_view.combat_action_idx;
         let marker = if is_selected { " ▸ " } else { "   " };
         let style = if is_selected {
@@ -1323,9 +1853,15 @@ fn draw_combat_actions(
         } else {
             Style::default().fg(ui::DIM)
         };
+        let preview_style = if is_selected {
+            Style::default().fg(ui::DIM)
+        } else {
+            Style::default().fg(Color::Rgb(60, 55, 50))
+        };
         lines.push(Line::from(vec![
             Span::styled(marker, Style::default().fg(ui::FLAME)),
-            Span::styled(*label, style),
+            Span::styled(format!("{:<12}", label), style),
+            Span::styled(format!("({})", preview), preview_style),
         ]));
     }
 

@@ -200,6 +200,22 @@ pub struct ActiveAdventure {
     pub pending_loot: Vec<(ItemId, u32)>,
     pub pending_gold: u32,
     pub pending_xp: u32,
+    // ── Dungeon-specific ──────────────────────────────────────────────
+    /// If this adventure is a dungeon, the dungeon definition ID.
+    #[serde(default)]
+    pub dungeon_id: Option<String>,
+    /// Current floor index (0-based). None for story quests.
+    #[serde(default)]
+    pub current_floor: u32,
+    /// Total floors in this dungeon run.
+    #[serde(default)]
+    pub total_floors: u32,
+    /// The current floor's generated map (for dungeons, replaces the quest's static map).
+    #[serde(default)]
+    pub dungeon_map: Option<super::quest::QuestMap>,
+    /// Generated encounters for the current dungeon floor, keyed by encounter_id.
+    #[serde(default)]
+    pub dungeon_encounters: Vec<super::quest::Encounter>,
 }
 
 #[allow(dead_code)]
@@ -216,11 +232,79 @@ impl ActiveAdventure {
             pending_loot: Vec::new(),
             pending_gold: 0,
             pending_xp: 0,
+            dungeon_id: None,
+            current_floor: 0,
+            total_floors: 0,
+            dungeon_map: None,
+            dungeon_encounters: Vec::new(),
         };
-        adv.reveal_around(quest.map.start.0, quest.map.start.1, quest.map.width, quest.map.height);
+        adv.reveal_current(quest.map.start.0, quest.map.start.1);
         adv
     }
 
+    /// Create an adventure from a dungeon definition (procedurally generated).
+    pub fn new_dungeon(
+        dungeon: &super::dungeon::DungeonDef,
+        party: Vec<PartyMember>,
+    ) -> Self {
+        use rand::Rng;
+        let mut rng = rand::rng();
+        let total_floors = rng.random_range(dungeon.min_floors..=dungeon.max_floors);
+        let floor = super::dungeon::generate_floor(dungeon, 0, total_floors);
+
+        let mut adv = ActiveAdventure {
+            quest_id: dungeon.id.clone(),
+            party,
+            position: floor.start,
+            revealed: Vec::new(),
+            completed_squares: Vec::new(),
+            state: AdventureState::Exploring,
+            log: vec![format!("{} — Floor 1", dungeon.name)],
+            pending_loot: Vec::new(),
+            pending_gold: 0,
+            pending_xp: 0,
+            dungeon_id: Some(dungeon.id.clone()),
+            current_floor: 0,
+            total_floors,
+            dungeon_map: Some(floor.clone()),
+            dungeon_encounters: Vec::new(),
+        };
+        adv.reveal_current(floor.start.0, floor.start.1);
+        adv
+    }
+
+    /// Get the active map (dungeon floor map if in a dungeon, or None for story quests).
+    pub fn active_map(&self) -> Option<&super::quest::QuestMap> {
+        self.dungeon_map.as_ref()
+    }
+
+    /// Descend to the next dungeon floor.
+    pub fn descend_floor(&mut self, dungeon: &super::dungeon::DungeonDef) {
+        self.current_floor += 1;
+        let floor = super::dungeon::generate_floor(dungeon, self.current_floor, self.total_floors);
+        self.position = floor.start;
+        self.revealed.clear();
+        self.completed_squares.clear();
+        self.dungeon_encounters.clear();
+        self.reveal_current(floor.start.0, floor.start.1);
+        self.add_log(format!(
+            "Descended to Floor {} of {}",
+            self.current_floor + 1,
+            self.total_floors
+        ));
+        self.dungeon_map = Some(floor);
+    }
+
+    /// Reveal only the tile the party is standing on (no adjacent reveal).
+    pub fn reveal_current(&mut self, x: u32, y: u32) {
+        let p = (x, y);
+        if !self.revealed.contains(&p) {
+            self.revealed.push(p);
+        }
+    }
+
+    /// Legacy: reveal current + adjacent tiles (kept for reference but unused).
+    #[allow(dead_code)]
     pub fn reveal_around(&mut self, x: u32, y: u32, w: u32, h: u32) {
         let xi = x as i32;
         let yi = y as i32;
@@ -261,7 +345,7 @@ impl ActiveAdventure {
             return false;
         }
         self.position = (nx as u32, ny as u32);
-        self.reveal_around(self.position.0, self.position.1, w, h);
+        self.reveal_current(self.position.0, self.position.1);
         true
     }
 
@@ -307,8 +391,8 @@ pub fn resolve_party_action(
             if enemy.current_hp <= 0 {
                 return false;
             }
-            // Damage = strength (Phase 3a — gear is already in stats; armor reduction later)
-            let damage = actor.strength.max(1);
+            // Damage = max(STR, DEX) — uses whichever stat is higher
+            let damage = actor.strength.max(actor.dexterity).max(1);
             enemy.current_hp = (enemy.current_hp - damage).max(0);
             combat
                 .log

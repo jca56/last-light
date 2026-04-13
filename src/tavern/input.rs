@@ -643,6 +643,10 @@ fn handle_inventory_input(
 fn adventure_esc(state: &mut TavernState, game_state: &mut GameState) -> bool {
     match state.adventure_view.screen {
         AdventureScreen::Roster => {
+            if state.adventure_view.roster_focus == RosterFocus::ItemPicker {
+                state.adventure_view.roster_focus = RosterFocus::Equipment;
+                return true;
+            }
             if state.adventure_view.roster_focus == RosterFocus::Equipment {
                 state.adventure_view.roster_focus = RosterFocus::List;
                 return true;
@@ -741,13 +745,9 @@ fn handle_roster(state: &mut TavernState, game_state: &mut GameState, key: KeyCo
                     }
                 }
                 KeyCode::Enter => {
-                    let adv_idx = state.adventure_view.selected_adventurer;
-                    let slot = state.adventure_view.roster_equip_slot;
-                    if slot <= 2 {
-                        cycle_equipment_for_roster(game_state, adv_idx, slot);
-                    } else {
-                        cycle_consumable_for_roster(game_state, adv_idx, slot - 3);
-                    }
+                    // Open item picker for this slot
+                    state.adventure_view.roster_focus = RosterFocus::ItemPicker;
+                    state.adventure_view.roster_picker_idx = 0;
                 }
                 KeyCode::Char('x') | KeyCode::Char('X') => {
                     let adv_idx = state.adventure_view.selected_adventurer;
@@ -768,91 +768,167 @@ fn handle_roster(state: &mut TavernState, game_state: &mut GameState, key: KeyCo
                 _ => {}
             }
         }
+        RosterFocus::ItemPicker => {
+            let adv_idx = state.adventure_view.selected_adventurer;
+            let slot = state.adventure_view.roster_equip_slot;
+            let compatible = compatible_items_for_slot(game_state, slot);
+
+            match key {
+                KeyCode::Up => {
+                    if state.adventure_view.roster_picker_idx > 0 {
+                        state.adventure_view.roster_picker_idx -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if !compatible.is_empty()
+                        && state.adventure_view.roster_picker_idx + 1 < compatible.len()
+                    {
+                        state.adventure_view.roster_picker_idx += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some((item_id, _)) =
+                        compatible.get(state.adventure_view.roster_picker_idx)
+                    {
+                        let item_id = item_id.clone();
+                        if slot <= 2 {
+                            equip_item_from_picker(game_state, adv_idx, slot, &item_id);
+                        } else {
+                            equip_consumable_from_picker(
+                                game_state,
+                                adv_idx,
+                                slot - 3,
+                                &item_id,
+                            );
+                        }
+                    }
+                    state.adventure_view.roster_focus = RosterFocus::Equipment;
+                }
+                KeyCode::Esc => {
+                    state.adventure_view.roster_focus = RosterFocus::Equipment;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Get all items from inventory that are compatible with the given equipment
+/// or consumable slot. Returns (ItemId, quantity) pairs sorted by name.
+pub(super) fn compatible_items_for_slot(
+    game_state: &GameState,
+    slot: usize,
+) -> Vec<(game::ItemId, u32)> {
+    let registry = game::ItemRegistry::new();
+
+    if slot <= 2 {
+        // Equipment slot: filter by Weapon/Armor/Accessory
+        let target_category = match slot {
+            0 => game::ItemCategory::Weapon,
+            1 => game::ItemCategory::Armor,
+            2 => game::ItemCategory::Accessory,
+            _ => return Vec::new(),
+        };
+        let mut items: Vec<(game::ItemId, u32)> = game_state
+            .inventory
+            .items()
+            .iter()
+            .filter_map(|(id, qty)| {
+                if *qty == 0 {
+                    return None;
+                }
+                let def = registry.get(id)?;
+                if def.category == target_category {
+                    Some((id.clone(), *qty))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        items.sort_by(|(a, _), (b, _)| {
+            let a_name = registry.get(a).map(|d| d.name.clone()).unwrap_or_default();
+            let b_name = registry.get(b).map(|d| d.name.clone()).unwrap_or_default();
+            a_name.cmp(&b_name)
+        });
+        items
+    } else {
+        // Consumable slot: show consumable items
+        let mut items: Vec<(game::ItemId, u32)> = game_state
+            .inventory
+            .items()
+            .iter()
+            .filter_map(|(id, qty)| {
+                if *qty == 0 {
+                    return None;
+                }
+                let def = registry.get(id)?;
+                if def.tags.iter().any(|t| t == "consumable") {
+                    Some((id.clone(), *qty))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        items.sort_by(|(a, _), (b, _)| {
+            let a_name = registry.get(a).map(|d| d.name.clone()).unwrap_or_default();
+            let b_name = registry.get(b).map(|d| d.name.clone()).unwrap_or_default();
+            a_name.cmp(&b_name)
+        });
+        items
+    }
+}
+
+/// Equip a specific gear item from the picker. Unequips current item first.
+fn equip_item_from_picker(
+    game_state: &mut GameState,
+    adv_idx: usize,
+    equip_slot: usize,
+    item_id: &game::ItemId,
+) {
+    unequip_slot(game_state, adv_idx, equip_slot);
+    if !game_state.inventory.remove(item_id, 1) {
+        return;
+    }
+    let Some(adv) = game_state.adventurers.get_mut(adv_idx) else {
+        game_state.inventory.add(item_id, 1);
+        return;
+    };
+    match equip_slot {
+        0 => adv.equipment.weapon = Some(item_id.clone()),
+        1 => adv.equipment.armor = Some(item_id.clone()),
+        2 => adv.equipment.accessory = Some(item_id.clone()),
+        _ => {
+            game_state.inventory.add(item_id, 1);
+        }
+    }
+}
+
+/// Equip a consumable item from the picker into a consumable slot.
+fn equip_consumable_from_picker(
+    game_state: &mut GameState,
+    adv_idx: usize,
+    consumable_slot: usize,
+    item_id: &game::ItemId,
+) {
+    unequip_consumable(game_state, adv_idx, consumable_slot);
+    if !game_state.inventory.remove(item_id, 1) {
+        return;
+    }
+    let Some(adv) = game_state.adventurers.get_mut(adv_idx) else {
+        game_state.inventory.add(item_id, 1);
+        return;
+    };
+    adv.init_consumable_slots();
+    if consumable_slot < adv.consumables.len() {
+        adv.consumables[consumable_slot] = Some(item_id.clone());
+    } else {
+        game_state.inventory.add(item_id, 1);
     }
 }
 
 /// Cycle equipment for the roster view. Same logic as the party setup
 /// cycle_equipment but doesn't need GameData for filtering — we just match
 /// by item category directly.
-fn cycle_equipment_for_roster(
-    game_state: &mut GameState,
-    adv_idx: usize,
-    equip_slot: usize,
-) {
-    let target_category = match equip_slot {
-        0 => game::ItemCategory::Weapon,
-        1 => game::ItemCategory::Armor,
-        2 => game::ItemCategory::Accessory,
-        _ => return,
-    };
-
-    // Find compatible items in inventory
-    // (We need the registry to check categories, but we can access it via a fresh one)
-    let registry = game::ItemRegistry::new();
-    let compatible: Vec<game::ItemId> = game_state
-        .inventory
-        .items()
-        .iter()
-        .filter_map(|(id, qty)| {
-            if *qty == 0 {
-                return None;
-            }
-            let def = registry.get(id)?;
-            if def.category == target_category {
-                Some(id.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if compatible.is_empty() {
-        return;
-    }
-
-    let Some(adv) = game_state.adventurers.get_mut(adv_idx) else {
-        return;
-    };
-
-    let current_id = match equip_slot {
-        0 => adv.equipment.weapon.clone(),
-        1 => adv.equipment.armor.clone(),
-        2 => adv.equipment.accessory.clone(),
-        _ => return,
-    };
-
-    let next_id = match &current_id {
-        None => compatible[0].clone(),
-        Some(curr) => {
-            let pos = compatible.iter().position(|id| id == curr);
-            match pos {
-                Some(i) => compatible[(i + 1) % compatible.len()].clone(),
-                None => compatible[0].clone(),
-            }
-        }
-    };
-
-    // Return old item
-    if let Some(prev) = current_id {
-        game_state.inventory.add(&prev, 1);
-    }
-
-    // Take new item
-    if !game_state.inventory.remove(&next_id, 1) {
-        return;
-    }
-
-    let Some(adv) = game_state.adventurers.get_mut(adv_idx) else {
-        return;
-    };
-    match equip_slot {
-        0 => adv.equipment.weapon = Some(next_id),
-        1 => adv.equipment.armor = Some(next_id),
-        2 => adv.equipment.accessory = Some(next_id),
-        _ => {}
-    }
-}
-
 fn handle_quest_board(state: &mut TavernState, data: &GameData, key: KeyCode) {
     match key {
         KeyCode::Tab => {
@@ -861,7 +937,9 @@ fn handle_quest_board(state: &mut TavernState, data: &GameData, key: KeyCode) {
         }
         _ => {}
     }
-    if data.quests.is_empty() {
+    let total = data.quests.len() + data.dungeons.len();
+    state.adventure_view.quest_board_count = total;
+    if total == 0 {
         return;
     }
     match key {
@@ -871,7 +949,7 @@ fn handle_quest_board(state: &mut TavernState, data: &GameData, key: KeyCode) {
             }
         }
         KeyCode::Down => {
-            if state.adventure_view.selected_quest + 1 < data.quests.len() {
+            if state.adventure_view.selected_quest + 1 < total {
                 state.adventure_view.selected_quest += 1;
             }
         }
@@ -1018,7 +1096,10 @@ fn cycle_equipment(
         _ => return,
     };
 
-    // Find compatible items in inventory
+    // First: safely unequip current item (returns it to inventory via take())
+    unequip_slot(game_state, adv_idx, equip_slot);
+
+    // Now find compatible items from inventory (which now includes the returned item)
     let compatible: Vec<game::ItemId> = game_state
         .inventory
         .items()
@@ -1040,50 +1121,9 @@ fn cycle_equipment(
         return;
     }
 
-    let Some(adv) = game_state.adventurers.get_mut(adv_idx) else {
-        return;
-    };
-
-    // Get currently equipped item id (if any)
-    let current_id = match equip_slot {
-        0 => adv.equipment.weapon.clone(),
-        1 => adv.equipment.armor.clone(),
-        2 => adv.equipment.accessory.clone(),
-        _ => return,
-    };
-
-    // Pick the next item (or first if currently None)
-    let next_id: game::ItemId = match &current_id {
-        None => compatible[0].clone(),
-        Some(curr) => {
-            let pos = compatible.iter().position(|id| id == curr);
-            match pos {
-                Some(i) => compatible[(i + 1) % compatible.len()].clone(),
-                None => compatible[0].clone(),
-            }
-        }
-    };
-
-    // Return the previous item to inventory
-    if let Some(prev) = current_id {
-        game_state.inventory.add(&prev, 1);
-    }
-
-    // Take the new item from inventory
-    if !game_state.inventory.remove(&next_id, 1) {
-        return;
-    }
-
-    // Re-borrow adv (was borrowed during compatible iteration above)
-    let Some(adv) = game_state.adventurers.get_mut(adv_idx) else {
-        return;
-    };
-    match equip_slot {
-        0 => adv.equipment.weapon = Some(next_id),
-        1 => adv.equipment.armor = Some(next_id),
-        2 => adv.equipment.accessory = Some(next_id),
-        _ => {}
-    }
+    // Pick the first compatible item and equip it
+    let next_id = compatible[0].clone();
+    equip_item_from_picker(game_state, adv_idx, equip_slot, &next_id);
 }
 
 fn unequip_slot(game_state: &mut GameState, adv_idx: usize, equip_slot: usize) {
@@ -1098,66 +1138,6 @@ fn unequip_slot(game_state: &mut GameState, adv_idx: usize, equip_slot: usize) {
     };
     if let Some(id) = removed {
         game_state.inventory.add(&id, 1);
-    }
-}
-
-/// Cycle through consumable items in inventory for a given consumable slot.
-fn cycle_consumable_for_roster(game_state: &mut GameState, adv_idx: usize, slot: usize) {
-    let registry = game::ItemRegistry::new();
-    let compatible: Vec<game::ItemId> = game_state
-        .inventory
-        .items()
-        .iter()
-        .filter_map(|(id, qty)| {
-            if *qty == 0 {
-                return None;
-            }
-            let def = registry.get(id)?;
-            if def.category == game::ItemCategory::Consumable {
-                Some(id.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if compatible.is_empty() {
-        return;
-    }
-
-    let Some(adv) = game_state.adventurers.get_mut(adv_idx) else {
-        return;
-    };
-    adv.init_consumable_slots();
-
-    let current_id = adv.consumables.get(slot).cloned().flatten();
-
-    let next_id = match &current_id {
-        None => compatible[0].clone(),
-        Some(curr) => {
-            let pos = compatible.iter().position(|id| id == curr);
-            match pos {
-                Some(i) => compatible[(i + 1) % compatible.len()].clone(),
-                None => compatible[0].clone(),
-            }
-        }
-    };
-
-    // Return old item
-    if let Some(prev) = current_id {
-        game_state.inventory.add(&prev, 1);
-    }
-
-    // Take new item
-    if !game_state.inventory.remove(&next_id, 1) {
-        return;
-    }
-
-    let Some(adv) = game_state.adventurers.get_mut(adv_idx) else {
-        return;
-    };
-    if slot < adv.consumables.len() {
-        adv.consumables[slot] = Some(next_id);
     }
 }
 
@@ -1238,33 +1218,45 @@ fn unequip_consumable(game_state: &mut GameState, adv_idx: usize, slot: usize) {
 }
 
 fn try_start_adventure(state: &mut TavernState, game_state: &mut GameState, data: &GameData) {
-    let Some(quest) = data.quests.get(state.adventure_view.selected_quest) else {
-        return;
+    let idx = state.adventure_view.selected_quest;
+    let quest_count = data.quests.len();
+
+    // Determine if this is a story quest or a dungeon
+    let (min_party, max_party, name) = if idx < quest_count {
+        let q = &data.quests[idx];
+        (q.min_party, q.max_party, q.name.clone())
+    } else {
+        let di = idx - quest_count;
+        let Some(d) = data.dungeons.get(di) else {
+            return;
+        };
+        (d.min_party, d.max_party, d.name.clone())
     };
+
     let party_count: u32 = state
         .adventure_view
         .party_slots
         .iter()
         .filter(|s| s.is_some())
         .count() as u32;
-    if party_count < quest.min_party {
+    if party_count < min_party {
         state.log_messages.push((
-            format!("Need at least {} adventurer(s) for this quest.", quest.min_party),
+            format!("Need at least {} adventurer(s).", min_party),
             ratatui::style::Style::default().fg(ui::DIM),
         ));
         state.auto_scroll(20);
         return;
     }
-    if party_count > quest.max_party {
+    if party_count > max_party {
         state.log_messages.push((
-            format!("Maximum {} adventurer(s) for this quest.", quest.max_party),
+            format!("Maximum {} adventurer(s).", max_party),
             ratatui::style::Style::default().fg(ui::DIM),
         ));
         state.auto_scroll(20);
         return;
     }
 
-    // Build party members from selected adventurers
+    // Build party members
     let mut party = Vec::new();
     for slot in state.adventure_view.party_slots.iter() {
         if let Some(adv_idx) = slot {
@@ -1287,13 +1279,20 @@ fn try_start_adventure(state: &mut TavernState, game_state: &mut GameState, data
         }
     }
 
-    let active = game::ActiveAdventure::new(quest, party);
+    // Create the adventure (story quest or dungeon)
+    let active = if idx < quest_count {
+        game::ActiveAdventure::new(&data.quests[idx], party)
+    } else {
+        let di = idx - quest_count;
+        game::ActiveAdventure::new_dungeon(&data.dungeons[di], party)
+    };
+
     game_state.active_adventure = Some(active);
     state.adventure_view.screen = AdventureScreen::InAdventure;
     state.bottom_tab = BottomTab::Adventures;
 
     state.log_messages.push((
-        format!("The party departs for {}.", quest.name),
+        format!("The party departs for {}.", name),
         ratatui::style::Style::default().fg(ui::GOLD),
     ));
     state.auto_scroll(20);
@@ -1305,69 +1304,167 @@ fn handle_in_adventure(
     data: &GameData,
     key: KeyCode,
 ) {
-    let Some(quest) = game_state
-        .active_adventure
-        .as_ref()
-        .and_then(|a| data.quest(&a.quest_id))
-    else {
-        return;
-    };
-    let w = quest.map.width;
-    let h = quest.map.height;
-
-    let (dx, dy) = match key {
-        KeyCode::Up => (0i32, -1i32),
-        KeyCode::Down => (0, 1),
-        KeyCode::Left => (-1, 0),
-        KeyCode::Right => (1, 0),
-        _ => return,
+    // Get map dimensions (dungeon floor or static quest)
+    let (w, h) = {
+        let Some(adventure) = game_state.active_adventure.as_ref() else {
+            return;
+        };
+        if let Some(dm) = adventure.active_map() {
+            (dm.width, dm.height)
+        } else if let Some(q) = data.quest(&adventure.quest_id) {
+            (q.map.width, q.map.height)
+        } else {
+            return;
+        }
     };
 
+    match key {
+        KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
+            let (dx, dy) = match key {
+                KeyCode::Up => (0i32, -1i32),
+                KeyCode::Down => (0, 1),
+                KeyCode::Left => (-1, 0),
+                KeyCode::Right => (1, 0),
+                _ => unreachable!(),
+            };
+            let Some(adventure) = game_state.active_adventure.as_mut() else {
+                return;
+            };
+            if !adventure.try_move(dx, dy, w, h) {
+                return;
+            }
+            // Auto-trigger dangerous squares (traps, combat, boss)
+            trigger_auto_square(state, game_state, data);
+        }
+        KeyCode::Enter => {
+            // Manually interact with the current square (chests, rest, ladders)
+            trigger_manual_square(state, game_state, data);
+        }
+        KeyCode::Char('i') | KeyCode::Char('I') => {
+            // Use a consumable item out of combat
+            use_consumable_out_of_combat(state, game_state, data);
+        }
+        _ => {}
+    }
+}
+
+/// Use a consumable from the first party member who has one.
+/// Shows the consumable picker (reuses combat consumable picking state).
+fn use_consumable_out_of_combat(
+    state: &mut TavernState,
+    game_state: &mut GameState,
+    data: &GameData,
+) {
     let Some(adventure) = game_state.active_adventure.as_mut() else {
         return;
     };
-    if !adventure.try_move(dx, dy, w, h) {
+
+    // Find any party member with consumables
+    let has_any = adventure
+        .party
+        .iter()
+        .any(|m| !m.downed && m.has_consumables());
+    if !has_any {
+        state.log_messages.push((
+            "No consumables available.".into(),
+            ratatui::style::Style::default().fg(ui::DIM),
+        ));
+        state.auto_scroll(20);
         return;
     }
 
-    // Trigger square effect
-    trigger_current_square(state, game_state, data);
-}
-
-fn trigger_current_square(state: &mut TavernState, game_state: &mut GameState, data: &GameData) {
-    let Some(adventure) = game_state.active_adventure.as_mut() else {
+    // Find first non-downed member with consumables
+    let member_idx = adventure
+        .party
+        .iter()
+        .position(|m| !m.downed && m.has_consumables());
+    let Some(mi) = member_idx else {
         return;
     };
-    let Some(quest) = data.quest(&adventure.quest_id) else {
+
+    // Use the first available consumable
+    let consumable_idx = adventure.party[mi]
+        .consumables
+        .iter()
+        .position(|s| s.is_some());
+    let Some(ci) = consumable_idx else {
         return;
+    };
+    let item_id = adventure.party[mi].consumables[ci].take();
+    let Some(id) = item_id else {
+        return;
+    };
+
+    // Apply the consumable effect
+    let item_name = data
+        .item_registry
+        .get(&id)
+        .map(|d| d.name.clone())
+        .unwrap_or_else(|| id.0.clone());
+    let member_name = adventure.party[mi].name.clone();
+
+    // Check tags for effect
+    let def = data.item_registry.get(&id);
+    let is_healing = def
+        .map(|d| d.tags.iter().any(|t| t == "healing"))
+        .unwrap_or(false);
+
+    if is_healing {
+        // Heal the most damaged non-downed party member
+        let target_idx = adventure
+            .party
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| !m.downed && m.current_hp < m.max_hp)
+            .min_by_key(|(_, m)| m.current_hp)
+            .map(|(i, _)| i);
+        if let Some(ti) = target_idx {
+            let heal_amount = if id.0.contains("minor") { 8 } else { 15 };
+            let target = &mut adventure.party[ti];
+            let old_hp = target.current_hp;
+            target.current_hp = (target.current_hp + heal_amount).min(target.max_hp);
+            let healed = target.current_hp - old_hp;
+            let target_name = target.name.clone();
+            adventure.add_log(format!(
+                "{} uses {} — {} heals {} HP!",
+                member_name, item_name, target_name, healed
+            ));
+        }
+    } else {
+        adventure.add_log(format!("{} uses {}.", member_name, item_name));
+    }
+}
+
+/// Helper: get the current square from the active map.
+fn get_current_square(
+    adventure: &game::ActiveAdventure,
+    data: &GameData,
+) -> Option<game::SquareKind> {
+    let map = if let Some(dm) = adventure.active_map() {
+        dm
+    } else if let Some(q) = data.quest(&adventure.quest_id) {
+        &q.map
+    } else {
+        return None;
     };
     let (x, y) = adventure.position;
     if adventure.is_completed(x, y) {
-        return;
+        return None;
     }
-    let Some(square) = quest.map.get(x, y).cloned() else {
+    map.get(x, y).cloned()
+}
+
+/// Auto-triggered when stepping onto a tile: traps and combat only.
+fn trigger_auto_square(state: &mut TavernState, game_state: &mut GameState, data: &GameData) {
+    let Some(adventure) = game_state.active_adventure.as_mut() else {
         return;
     };
+    let Some(square) = get_current_square(adventure, data) else {
+        return;
+    };
+    let (x, y) = adventure.position;
 
     match square {
-        game::SquareKind::Empty => {}
-        game::SquareKind::Treasure { gold, items } => {
-            adventure.pending_gold += gold;
-            for (id, qty) in &items {
-                adventure.pending_loot.push((id.clone(), *qty));
-            }
-            adventure.add_log(format!("Found {} gold and {} item(s).", gold, items.len()));
-            adventure.mark_completed(x, y);
-        }
-        game::SquareKind::Rest => {
-            for member in adventure.party.iter_mut() {
-                if !member.downed {
-                    member.current_hp = member.max_hp;
-                }
-            }
-            adventure.add_log("The party rests and recovers.");
-            adventure.mark_completed(x, y);
-        }
         game::SquareKind::Trap { damage, dex_dc } => {
             use rand::Rng;
             let mut rng = rand::rng();
@@ -1388,7 +1485,6 @@ fn trigger_current_square(state: &mut TavernState, game_state: &mut GameState, d
             }
             adventure.add_log(format!("Trap! {} party member(s) hit.", hits));
             adventure.mark_completed(x, y);
-            // Check if party is wiped
             if adventure.party.iter().all(|m| m.downed) {
                 adventure.state = AdventureState::Complete { success: false };
                 state.adventure_view.screen = AdventureScreen::Results;
@@ -1399,11 +1495,46 @@ fn trigger_current_square(state: &mut TavernState, game_state: &mut GameState, d
                 state.auto_scroll(20);
             }
         }
-        game::SquareKind::Combat { encounter_id }
-        | game::SquareKind::Boss { encounter_id } => {
-            let is_boss = matches!(quest.map.get(x, y), Some(game::SquareKind::Boss { .. }));
-            if let Some(encounter) = data.encounter(&encounter_id) {
-                let combat = game::CombatState::new(encounter, adventure.party.len(), is_boss);
+        game::SquareKind::Combat { ref encounter_id }
+        | game::SquareKind::Boss { ref encounter_id } => {
+            let is_boss = matches!(square, game::SquareKind::Boss { .. });
+            let encounter_id = encounter_id.clone();
+            let encounter = if adventure.dungeon_id.is_some() {
+                let dungeon = adventure
+                    .dungeon_id
+                    .as_ref()
+                    .and_then(|did| data.dungeons.iter().find(|d| d.id == *did));
+                if is_boss {
+                    dungeon.map(|d| {
+                        let scale = 1.0 + 0.15 * adventure.current_floor as f64;
+                        game::dungeon::scale_boss(&d.boss, scale)
+                    })
+                } else {
+                    dungeon.map(|d| {
+                        let pool_idx = (adventure.current_floor as usize)
+                            .min(d.enemy_pools.len().saturating_sub(1));
+                        let pool = &d.enemy_pools[pool_idx];
+                        let scale = 1.0 + 0.15 * adventure.current_floor as f64;
+                        use rand::Rng;
+                        let mut rng = rand::rng();
+                        let count = rng.random_range(1..=3u32).min(pool.enemies.len() as u32);
+                        let mut enemies = Vec::new();
+                        for _ in 0..count {
+                            let template =
+                                &pool.enemies[rng.random_range(0..pool.enemies.len())];
+                            enemies.push(game::dungeon::scale_enemy(template, scale));
+                        }
+                        game::Encounter {
+                            id: encounter_id.clone(),
+                            enemies,
+                        }
+                    })
+                }
+            } else {
+                data.encounter(&encounter_id).cloned()
+            };
+            if let Some(enc) = encounter {
+                let combat = game::CombatState::new(&enc, adventure.party.len(), is_boss);
                 adventure.state = AdventureState::InCombat(combat);
                 state.adventure_view.screen = AdventureScreen::Combat;
                 state.adventure_view.combat_action_idx = 0;
@@ -1411,6 +1542,54 @@ fn trigger_current_square(state: &mut TavernState, game_state: &mut GameState, d
                 state.adventure_view.combat_picking_target = false;
             }
         }
+        _ => {} // Everything else requires Enter
+    }
+}
+
+/// Manually triggered with Enter: chests, rest spots, ladders.
+fn trigger_manual_square(state: &mut TavernState, game_state: &mut GameState, data: &GameData) {
+    let Some(adventure) = game_state.active_adventure.as_mut() else {
+        return;
+    };
+    let Some(square) = get_current_square(adventure, data) else {
+        return;
+    };
+    let (x, y) = adventure.position;
+
+    match square {
+        game::SquareKind::Treasure { gold, items } => {
+            adventure.pending_gold += gold;
+            for (id, qty) in &items {
+                adventure.pending_loot.push((id.clone(), *qty));
+            }
+            adventure.add_log(format!("Found {} gold and {} item(s).", gold, items.len()));
+            adventure.mark_completed(x, y);
+        }
+        game::SquareKind::Rest => {
+            for member in adventure.party.iter_mut() {
+                if !member.downed {
+                    member.current_hp = member.max_hp;
+                }
+            }
+            adventure.add_log("The party rests and recovers.");
+            adventure.mark_completed(x, y);
+        }
+        game::SquareKind::LadderDown => {
+            state.tile_graphics.cleanup_all();
+            if let Some(did) = adventure.dungeon_id.clone() {
+                if let Some(dungeon) = data.dungeons.iter().find(|d| d.id == did) {
+                    adventure.descend_floor(dungeon);
+                }
+            }
+        }
+        game::SquareKind::LadderUp => {
+            adventure.pending_xp = adventure.pending_xp / 2;
+            adventure.add_log("The party retreats up the ladder.");
+            adventure.state = AdventureState::Complete { success: true };
+            state.adventure_view.screen = AdventureScreen::Results;
+            state.tile_graphics.cleanup_all();
+        }
+        _ => {} // Traps/combat are auto, empty does nothing
     }
 }
 
@@ -1730,6 +1909,11 @@ fn advance_combat_after_action(
     state.adventure_view.combat_action_idx = 0;
 }
 
+fn cleanup_combat_portraits(state: &TavernState) {
+    state.tile_graphics.cleanup_enemy_portraits();
+    state.tile_graphics.cleanup_adv_portraits();
+}
+
 fn end_combat_victory(state: &mut TavernState, game_state: &mut GameState, data: &GameData) {
     let Some(adventure) = game_state.active_adventure.as_mut() else {
         return;
@@ -1746,6 +1930,9 @@ fn end_combat_victory(state: &mut TavernState, game_state: &mut GameState, data:
     // Mark current square as completed
     let pos = adventure.position;
     adventure.mark_completed(pos.0, pos.1);
+
+    // Clean up enemy portrait before leaving combat screen
+    cleanup_combat_portraits(state);
 
     // Return to exploring
     adventure.state = AdventureState::Exploring;
@@ -1774,6 +1961,7 @@ fn end_combat_loss(state: &mut TavernState, game_state: &mut GameState) {
     let Some(adventure) = game_state.active_adventure.as_mut() else {
         return;
     };
+    cleanup_combat_portraits(state);
     adventure.state = AdventureState::Complete { success: false };
     state.adventure_view.screen = AdventureScreen::Results;
     state.log_messages.push((

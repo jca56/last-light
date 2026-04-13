@@ -113,8 +113,9 @@ pub(super) struct LootPopup {
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum RosterFocus {
-    List,      // Browsing the adventurer list
-    Equipment, // Managing equipment slots for the selected adventurer
+    List,       // Browsing the adventurer list
+    Equipment,  // Managing equipment slots for the selected adventurer
+    ItemPicker, // Choosing an item to equip from inventory
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -138,7 +139,9 @@ pub(super) struct AdventureView {
     pub(super) selected_adventurer: usize, // index into game_state.adventurers (for Roster)
     pub(super) roster_focus: RosterFocus,
     pub(super) roster_equip_slot: usize,   // 0=Weapon, 1=Armor, 2=Accessory
-    pub(super) selected_quest: usize,
+    pub(super) roster_picker_idx: usize,   // selected index in the item picker list
+    pub(super) selected_quest: usize,      // index into combined list (quests + dungeons)
+    pub(super) quest_board_count: usize,   // total items on quest board (quests + dungeons)
     /// 3 party slots, each is an index into game_state.adventurers (or None)
     pub(super) party_slots: [Option<usize>; 3],
     /// Which party slot is selected on Party Setup screen
@@ -165,7 +168,9 @@ impl Default for AdventureView {
             selected_adventurer: 0,
             roster_focus: RosterFocus::List,
             roster_equip_slot: 0,
+            roster_picker_idx: 0,
             selected_quest: 0,
+            quest_board_count: 0,
             party_slots: [None, None, None],
             setup_slot: 0,
             setup_equip_slot: 0,
@@ -308,9 +313,14 @@ pub struct TavernState {
     /// Queue of Kitty graphics tiles to draw after terminal.draw() completes.
     /// Each entry: (terminal_x, terminal_y, tile_kind, image_id, cols, rows).
     pub(super) pending_kitty_tiles: Vec<(u16, u16, crate::ui::MapTile, u32, u16, u16)>,
-    /// Image IDs we've previously drawn this frame, used to delete leftovers
-    /// (so when the active tile area shrinks/moves, stale images get cleared).
+    /// Image IDs we've previously drawn this frame, used to delete leftovers.
     pub(super) prev_frame_kitty_ids: Vec<u32>,
+    /// Pending enemy portrait to draw after terminal.draw().
+    /// (terminal_x, terminal_y, enemy_name, cols, rows)
+    pub(super) pending_enemy_portrait: Option<(u16, u16, String, u16, u16)>,
+    /// Pending adventurer portraits to draw after terminal.draw().
+    /// (terminal_x, terminal_y, adv_id, slot_index, cols, rows)
+    pub(super) pending_adv_portraits: Vec<(u16, u16, String, usize, u16, u16)>,
 }
 
 impl TavernState {
@@ -356,6 +366,8 @@ impl TavernState {
             tile_graphics: TileGraphics::new(),
             pending_kitty_tiles: Vec::new(),
             prev_frame_kitty_ids: Vec::new(),
+            pending_enemy_portrait: None,
+            pending_adv_portraits: Vec::new(),
         }
     }
 

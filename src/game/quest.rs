@@ -23,6 +23,10 @@ pub enum SquareKind {
     Combat { encounter_id: String },
     /// Boss encounter (final challenge of the quest).
     Boss { encounter_id: String },
+    /// Ladder to the next floor of a dungeon.
+    LadderDown,
+    /// Ladder back up (retreat).
+    LadderUp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

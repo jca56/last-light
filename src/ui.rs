@@ -48,8 +48,10 @@ const TILE_COMBAT: &[u8] = include_bytes!("../assets/tiles/combat.png");
 const TILE_BOSS: &[u8] = include_bytes!("../assets/tiles/boss.png");
 const TILE_PARTY: &[u8] = include_bytes!("../assets/tiles/party.png");
 const TILE_FOG: &[u8] = include_bytes!("../assets/tiles/fog.png");
+const TILE_LADDER_DOWN: &[u8] = include_bytes!("../assets/tiles/ladder_down.png");
+const TILE_LADDER_UP: &[u8] = include_bytes!("../assets/tiles/ladder_up.png");
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MapTile {
     Empty,
     Treasure,
@@ -59,6 +61,8 @@ pub enum MapTile {
     Boss,
     Party,
     Fog,
+    LadderDown,
+    LadderUp,
 }
 
 pub fn map_tile_bytes(tile: MapTile) -> &'static [u8] {
@@ -71,6 +75,8 @@ pub fn map_tile_bytes(tile: MapTile) -> &'static [u8] {
         MapTile::Boss => TILE_BOSS,
         MapTile::Party => TILE_PARTY,
         MapTile::Fog => TILE_FOG,
+        MapTile::LadderDown => TILE_LADDER_DOWN,
+        MapTile::LadderUp => TILE_LADDER_UP,
     }
 }
 
@@ -105,6 +111,26 @@ pub fn adventurer_portrait_bytes(id: &str) -> Option<&'static [u8]> {
 #[allow(dead_code)]
 pub fn adventurer_portrait(id: &str, width: u16) -> Option<Vec<Line<'static>>> {
     adventurer_portrait_bytes(id).map(|bytes| halfblock::png_to_halfblock(bytes, width))
+}
+
+// ── Enemy portraits ────────────────────────────────────────────────────────
+const ENEMY_GIANT_RAT: &[u8] = include_bytes!("../assets/enemies/giant_rat.png");
+const ENEMY_RAT_KING: &[u8] = include_bytes!("../assets/enemies/rat_king.png");
+const ENEMY_CELLAR_SPIDER: &[u8] = include_bytes!("../assets/enemies/cellar_spider.png");
+const ENEMY_CAVE_SPIDER: &[u8] = include_bytes!("../assets/enemies/cave_spider.png");
+const ENEMY_GIANT_SNAKE: &[u8] = include_bytes!("../assets/enemies/giant_snake.png");
+const ENEMY_BROOD_MOTHER: &[u8] = include_bytes!("../assets/enemies/brood_mother.png");
+
+pub fn enemy_portrait_bytes(name: &str) -> Option<&'static [u8]> {
+    match name {
+        "Giant Rat" => Some(ENEMY_GIANT_RAT),
+        "Rat King" => Some(ENEMY_RAT_KING),
+        "Cellar Spider" => Some(ENEMY_CELLAR_SPIDER),
+        "Cave Spider" => Some(ENEMY_CAVE_SPIDER),
+        "Giant Snake" => Some(ENEMY_GIANT_SNAKE),
+        "Brood Mother" => Some(ENEMY_BROOD_MOTHER),
+        _ => None,
+    }
 }
 
 // ── Item icons (compile-time registry) ─────────────────────────────────────
