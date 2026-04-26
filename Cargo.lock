@@ -438,12 +438,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "last-light"
+name = "last-light-game"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "image",
+ "rand 0.9.2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "last-light-terminal"
 version = "0.1.0"
 dependencies = [
  "crossterm",
  "dirs",
  "image",
+ "last-light-game",
  "rand 0.9.2",
  "ratatui",
  "ratatui-image",
